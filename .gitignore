@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtualenv
+.venv/
+venv/
+env/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_meta
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Env / secrets
+.env
+.env.local
+
+# Local data cache (raw market data)
+data_cache/*
+!data_cache/.gitkeep
+
+# User-provided raw market data (often > GitHub 100MB limit and may be source-licensed)
+data/*.csv
+data/*.parquet
+
+# Backtest / scan outputs — contain specific stock picks + prices, don't track
+examples/*.csv
+examples/*.json
+examples/*_report.md
+examples/*_equity*.csv
+examples/qbot_report.md
+examples/qbot_results.json
+examples/deepseek_*.md
+examples/deepseek_*.json
+examples/hs300_*.md
+examples/hs300_*.json
+examples/csi*_*.md
+examples/csi*_*.json
+examples/sector_*.md
+examples/sector_*.json
+examples/indices_*.md
+examples/indices_*.json
+examples/overnight_*.md
+examples/overnight_*.json
+examples/strategy_*.md
+examples/strategy_*.csv
+examples/long_history_*
+examples/v4_validation_*
+examples/*_picks*.json
+
+# Backtest output
+output/
+reports/
+*.png
+*.html
+!notebooks/**/*.html
+
+# uv
+uv.lock
