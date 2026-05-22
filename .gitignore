@@ -67,6 +67,10 @@ examples/long_history_*
 examples/v4_validation_*
 examples/*_picks*.json
 
+# Local-only WIP optimization experiments (kept private for further tuning)
+examples/strategy_v6_*.py
+examples/strategy_v7_*.py
+
 # Backtest output
 output/
 reports/
