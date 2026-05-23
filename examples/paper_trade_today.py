@@ -123,7 +123,7 @@ def main():
     handler = Alpha158(
         start_time=train_start, end_time=test_end,
         fit_start_time=train_start, fit_end_time=train_end,
-        instruments="all",
+        instruments="csi300",
     )
     dataset = DatasetH(handler=handler, segments={
         "train": (train_start, train_end),
@@ -198,7 +198,7 @@ def main():
     print(f"\n[4/4] === 今日选股 ({today.date()}) ===\n")
     print(f"Model:    qlib Alpha158 + LGB, K={K} drop={N_DROP}")
     print(f"Train:    {train_start} → {train_end} ({TRAIN_MONTHS}个月)")
-    print("Universe: 全 A 股 (~5000 只, 剔除 ST)\n")
+    print("Universe: CSI300 (300 只, v17 验证 40月 +53.8% / Sharpe 0.71)\n")
 
     print(f"[今日 Top {K} 候选]")
     top_symbols = today_pred["instrument"].tolist()
