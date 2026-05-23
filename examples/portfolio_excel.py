@@ -76,6 +76,54 @@ def latest_closes() -> dict[str, tuple[pd.Timestamp, float]]:
     return {sym: (row["date"], row["close"]) for sym, row in latest.iterrows()}
 
 
+NOTES_TEXT = [
+    ["⚠️ 实盘心理 + 决策提醒", ""],
+    ["", ""],
+    ["几何累乘: 跌后回本所需涨幅", ""],
+    ["跌幅", "回本所需涨幅"],
+    ["-5%", "+5.3%"],
+    ["-10%", "+11.1%"],
+    ["-15%", "+17.6%"],
+    ["-20%", "+25.0%"],
+    ["-27% (v17 MDD)", "+37.0%"],
+    ["-30%", "+42.9%"],
+    ["-50%", "+100%"],
+    ["", ""],
+    ["v17 回测后验 (CSI300 / 40 月 / 5 万)", ""],
+    ["累计回报", "+53.82%"],
+    ["年化", "+13.79%"],
+    ["Sharpe", "0.71"],
+    ["最大回撤", "-27.26%"],
+    ["月胜率", "57.5%"],
+    ["⚠️ 真实期望 (扣 survivorship + 实摩擦)", "+8~12% 年化"],
+    ["", ""],
+    ["实盘单月跌幅 → 操作档", ""],
+    ["跌幅档", "建议"],
+    ["-5% 以内", "正常波动, 继续"],
+    ["-5% ~ -10%", "暂停建仓, 已建仓继续持有"],
+    ["-10% ~ -20%", "警惕, 考虑减仓 50%"],
+    ["-20% ~ -27%", "暂停策略, 重新评估 alpha 是否失效"],
+    ["超 -27%", "全部清仓, 等下次模型重训后再回来"],
+    ["", ""],
+    ["心理诚实", ""],
+    ["大多数人在 -20% 时割肉", ""],
+    ["回测 +54% ≠ 实盘 +54%, 行为偏差吃掉一半", ""],
+    ["建议: 先 10-30% 仓位试水 1-3 个月", ""],
+    ["", ""],
+    ["买入规则", ""],
+    ["集合竞价 9:25 看开盘价", ""],
+    ["开盘 ≤ 推荐价 +1%", "挂限价 = 开盘价"],
+    ["开盘 +1% ~ +3%", "挂 推荐价 +2% 等回调"],
+    ["开盘 +3% ~ +5%", "只买涨幅小的 1 只"],
+    ["开盘 > +5%", "全跳, 等次日新信号"],
+    ["", ""],
+    ["数据局限", ""],
+    ["Survivorship bias", "用 2026 CSI300 反推, 真实少 5-15pp"],
+    ["除权除息 (XD/DR)", "model 不感知, 看到 XD/DR 警惕"],
+    ["回测 vs 实盘", "回测假设完美执行, 实际有滑点+情绪"],
+]
+
+
 def init_workbook() -> Workbook:
     wb = Workbook()
     wb.remove(wb.active)
@@ -94,6 +142,24 @@ def init_workbook() -> Workbook:
         ws.freeze_panes = "A2"
         for col in range(1, len(headers) + 1):
             ws.column_dimensions[get_column_letter(col)].width = 13
+
+    ws = wb.create_sheet("Notes")
+    ws.column_dimensions["A"].width = 38
+    ws.column_dimensions["B"].width = 50
+    for i, (a, b) in enumerate(NOTES_TEXT, 1):
+        ca = ws.cell(row=i, column=1, value=a)
+        cb = ws.cell(row=i, column=2, value=b)
+        if a and not b and a.startswith(("⚠️", "几何", "v17", "实盘单月",
+                                          "心理", "买入", "数据")):
+            ca.font = Font(bold=True, color="FFFFFF", size=12)
+            ca.fill = PatternFill("solid", fgColor="C00000")
+        elif a in ("跌幅", "跌幅档"):
+            ca.font = Font(bold=True)
+            cb.font = Font(bold=True)
+            ca.fill = PatternFill("solid", fgColor="D9E1F2")
+            cb.fill = PatternFill("solid", fgColor="D9E1F2")
+    ws.freeze_panes = "A2"
+
     return wb
 
 
