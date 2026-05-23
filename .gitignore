@@ -74,6 +74,10 @@ examples/strategy_v7_*.py
 examples/strategy_v12_*.py
 examples/v12_*.csv
 examples/v12_*.md
+# v14 风控开关 (CSI300 MA200/vol/60d) 验证为负向 (MDD -16%→-21%, cum -43pp), 弃用
+examples/strategy_v14_*.py
+examples/v14_*.csv
+examples/v14_*.md
 
 # qlib MLflow experiment logs (large, contain training timestamps)
 mlruns/

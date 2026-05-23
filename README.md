@@ -82,6 +82,15 @@ data_cache/        # 本地行情缓存（gitignored）
 
 K=8 比 v10 K=30 多出 **+65 pp**，因为 N_DROP 才是真正决定持仓数的参数，K=30 在 5 万账户上被 drop 节奏卡住。
 
+### 验证为负向、已弃用的优化
+
+| 版本 | 思路 | 实测结果 |
+|------|------|---------|
+| v12 | 行业 prior（白酒减仓 / AI+电力加仓）| -6.17 pp（破坏 alpha）|
+| v14 | CSI300 MA200/vol/60d 风控开关 | MDD **-16% → -21%** / cum **-43 pp** |
+
+教训：ML 模型本身已学到部分系统对冲；硬规则风控/行业 prior 多为后视镜信号，叠加只会干扰模型 timing。
+
 参数说明：**目标持仓 8 只 / 每天最多换 2 只 / 跟着 LGB Top 8 走**，详见 [examples/v13_k_sweep_report.md](examples/v13_k_sweep_report.md)（本地）。
 
 ---
