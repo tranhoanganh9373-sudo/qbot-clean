@@ -71,6 +71,9 @@ examples/*_picks*.json
 examples/strategy_v6_*.py
 examples/strategy_v7_*.py
 
+# qlib MLflow experiment logs (large, contain training timestamps)
+mlruns/
+
 # Backtest output
 output/
 reports/

@@ -115,7 +115,7 @@ python examples/strategy_recommended.py
 
 ---
 
-## 探索过程的 7 个版本（教训记录）
+## 探索过程的 8 个版本（教训记录）
 
 | 版本 | 设计 | 教训 |
 |------|------|------|
@@ -127,6 +127,82 @@ python examples/strategy_recommended.py
 | v5 LightGBM | 19 特征 ML 选股 | gross Sharpe 3.64 但 daily 换手吃光，3 年仅 +12% |
 | v6 全增强 | + 板块 + ST + PE | 板块过滤砍 31pp，PE 帮助有限 |
 | v7 ensemble | v4 + v5 软投票 | 全部跑输 v4 单跑 |
-| **推荐** | **v4 + ST + warmup + PE，去板块去 ensemble** | 3 年 +63% / Sharpe 0.52 |
+| **保守推荐** | **v4 + ST + warmup + PE，去板块去 ensemble** | 3 年 +63% / Sharpe 0.52 |
+| **🚀 v8 qlib** | **Alpha158 (158 特征) + LGB + TopkDropout (k=30 drop 5)** | **20 月 walk-forward 累计 +152%，平均 IR 2.01，80% 月胜** |
 
 详细见各 `examples/strategy_*.py`。
+
+---
+
+## 🚀 v8 qlib Alpha158 + TopkDropout（**新的最佳**）
+
+`examples/strategy_v8_walkforward.py` — **借鉴 Microsoft qlib 三件套，做了 20 月 OOS walk-forward 验证**
+
+### 三件套
+
+| 件 | 内容 | 替代我们的 |
+|----|-----|-----------|
+| **Alpha158** | qlib 内置 158 个 cross-sectional 因子（量价/动量/反转/波动等）| 6 个 v4 手写规则 |
+| **LightGBM** | 12 月滚动训练（每月 retrain）| 无（v4 是规则）|
+| **TopkDropout** | 每天保 Top 30 + drop 5 + 进 5（平滑换手）| 周 rebal Top 3 一次性换 |
+
+### 20 月 walk-forward 验证（2024-09 → 2026-04）
+
+每月独立 retrain + test，零 look-ahead：
+
+| 指标 | 值 |
+|------|----|
+| **正超额月** | **16 / 20 (80%)** |
+| 平均月超额 | +4.80% |
+| **累计超额（复利）** | **+134.58%** |
+| **累计 absolute（复利）** | **+152.18%** |
+| **平均月 IR** | **+2.01** |
+| 折算年化 abs | **~78%** |
+| 折算年化 excess | ~72% |
+| 最差单月 | -10.26% (2026-03) |
+
+### 跑一遍
+
+```bash
+# 0. 装 qlib (额外的 extra)
+uv pip install -e ".[qlib]"
+
+# 1. 拉 qlib 内置 cn_data (510MB, 跑 2017-2020 CSI300 demo 用)
+python examples/strategy_v8_qlib_alpha158.py
+
+# 2. 把我们 long_history.parquet 转 qlib bin 格式 (一次性, ~15s)
+python examples/convert_parquet_to_qlib.py
+
+# 3. v8 单窗口在我们 3 年数据上 (快, ~3 min)
+python examples/strategy_v8_long_history.py
+
+# 4. v8 walk-forward 20 月 OOS 验证 (~10-15 min)
+python examples/strategy_v8_walkforward.py
+```
+
+### v8 vs recommended 对比
+
+| 维度 | recommended (v4+) | **v8 qlib** |
+|------|-----------------|-----------|
+| Sharpe / IR | 0.52 (3 年全期) | **2.01 (20 月 walk-forward)** |
+| 累计 net | +63% (3 年) | **+152% (20 月)** |
+| 年化 | +19% | **~78%** |
+| 持仓 | Top 3 周 rebal | Top 30 日 drop 5 |
+| 特征 | 6 手写 | **158 cross-sectional** |
+| 训练 | 无 | LGB 每月 retrain |
+| 复杂度 | 低（纯规则）| 中（需 qlib）|
+
+### v8 alpha 来源（不是 LGB 预测准！）
+
+- **Rank IC 只有 0.012**（典型 alpha 0.03+）— LGB 预测其实不准
+- 真正的 alpha 来自：
+  1. **TopkDropout 调仓机制**：平滑换手 + 持续暴露在 LGB 预测的强势池
+  2. **Alpha158 cross-sectional 因子**：捕捉了 v4 完全没有的市场结构
+  3. **每月 retrain**：让模型跟上风格变化
+
+### ⚠️ 警告
+
+- **20 月样本仍然短**，需要 2017-2020 完整跨牛熊验证
+- 历史 IR 2.01 不保证未来
+- A 股结构（T+1、涨跌停）短期内变化 → 策略可能失效
+- 真实交易 IR 期望 1.0-1.5（考虑容量、冲击成本）

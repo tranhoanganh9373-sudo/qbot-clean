@@ -30,6 +30,13 @@ ml = [
     "torch>=2.2",
     "lightgbm>=4.3",
     "scikit-learn>=1.5",
+    "pyarrow>=16.0",
+]
+# qlib (Microsoft 工业级量化平台) for v8 strategies
+# Install with:  uv pip install -e ".[qlib]"
+qlib = [
+    "pyqlib>=0.9.7",
+    "pyarrow>=16.0",
 ]
 
 [build-system]
