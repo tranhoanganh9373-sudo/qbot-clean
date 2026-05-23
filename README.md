@@ -68,7 +68,25 @@ data_cache/        # 本地行情缓存（gitignored）
 
 ---
 
-## ⭐ 推荐策略（生产可交易版）
+## 🏆 生产部署目标：v13 K=8 / drop=2 / 5 万
+
+**`examples/strategy_v13_k_sweep.py`** — qlib Alpha158 + LGB + TopkDropout（K=8 drop=2）
+
+经 K ∈ {3,5,8,10,15,20} 全扫描，5 万账户在 **2017-2020 跨牛熊 OOS 44 月**最优：
+
+| 配置 | cum % | ann % | Sharpe | MDD % | win % | 实际持仓 |
+|------|------:|------:|------:|------:|------:|------:|
+| **K=8 drop=2 ⭐** | **+207** | **+35.8** | 1.38 | -16.2 | 65.9 | 3.5 |
+| K=20 drop=4（备选低波）| +160 | +30 | 1.51 | -13.1 | 70.5 | 7.7 |
+| v10 K=30（弃用，对 5 万过大）| +142 | — | — | — | — | 5.5 |
+
+K=8 比 v10 K=30 多出 **+65 pp**，因为 N_DROP 才是真正决定持仓数的参数，K=30 在 5 万账户上被 drop 节奏卡住。
+
+参数说明：**目标持仓 8 只 / 每天最多换 2 只 / 跟着 LGB Top 8 走**，详见 [examples/v13_k_sweep_report.md](examples/v13_k_sweep_report.md)（本地）。
+
+---
+
+## 历史推荐（无 ML 简化版本）
 
 `examples/strategy_recommended.py` — **v4-7d/Top3 + 保守增强**
 
