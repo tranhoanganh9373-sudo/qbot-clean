@@ -41,6 +41,7 @@ LOG_PATH = ROOT / "data_cache" / "paper_trade_log.csv"
 K = 8
 N_DROP = 2
 TRAIN_MONTHS = 12
+PORTFOLIO_VALUE = 5e4
 # 候选池扩 4 倍, 过滤涨停+跌停后取前 K. backtest 同样有这层过滤.
 CANDIDATE_POOL_MULTIPLIER = 4
 LIMIT_UP_THRESHOLD = 0.095  # 当日涨幅 ≥9.5% 视为涨停/接近涨停, 买不到
@@ -48,6 +49,8 @@ LIMIT_DOWN_THRESHOLD = -0.095  # ≤-9.5% 视为跌停, 别去接落刀
 # 科创板/创业板 (688/300) 涨跌停 ±20%, 阈值放宽
 LIMIT_UP_THRESHOLD_HIGH = 0.195
 LIMIT_DOWN_THRESHOLD_HIGH = -0.195
+# 价格上限: 单 pick 1 手 (100 股) ≤ daily_pool, 否则买不起
+MAX_AFFORDABLE_PRICE = PORTFOLIO_VALUE / (K / N_DROP) / 100  # = 125 元
 
 LGB_PARAMS = dict(
     loss="mse", colsample_bytree=0.8879, learning_rate=0.0421,
@@ -175,6 +178,9 @@ def main():
         if is_limit_down(sym, chg):
             skipped.append((sym, chg, "跌停"))
             continue
+        if curr > MAX_AFFORDABLE_PRICE:
+            skipped.append((sym, chg, f"贵({curr:.0f})"))
+            continue
         filtered_rows.append(row)
         if len(filtered_rows) >= K:
             break
@@ -185,7 +191,9 @@ def main():
     if skipped:
         n_up = sum(1 for _, _, t in skipped if t == "涨停")
         n_dn = sum(1 for _, _, t in skipped if t == "跌停")
-        print(f"\n[过滤涨跌停] 跳过 {len(skipped)} 只 (涨停 {n_up} / 跌停 {n_dn}):")
+        n_exp = sum(1 for _, _, t in skipped if t.startswith("贵"))
+        print(f"\n[过滤] 跳过 {len(skipped)} 只 (涨停 {n_up} / 跌停 {n_dn} / "
+              f"贵>{MAX_AFFORDABLE_PRICE:.0f}元 {n_exp}):")
         for s, c, t in skipped[:10]:
             sign = "+" if c >= 0 else ""
             print(f"  - {s} {sign}{c*100:.2f}%  [{t}]")
