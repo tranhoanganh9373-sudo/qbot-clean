@@ -52,6 +52,13 @@ references/
 # Model training artifacts (catboost/lightgbm 产物, 不入库)
 catboost_info/
 
+# 各类 backup/temp 文件 (.bak / .bak.* / .tmp / .pre_*.bak)
+*.bak
+*.bak.*
+*.bak_pre_*
+*.tmp
+.poller.tmp
+
 # User-provided raw market data (often > GitHub 100MB limit and may be source-licensed)
 data/*.csv
 data/*.parquet
