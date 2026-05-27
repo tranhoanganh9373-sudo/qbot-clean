@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claude_finance.dashboard_submit</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Volumes/SSD/finance/claude_finance/.venv/bin/python</string>
+        <string>/Volumes/SSD/finance/claude_finance/examples/dashboard_submit_server.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Volumes/SSD/finance/claude_finance</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/dashboard_submit_stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/dashboard_submit_stderr.log</string>
+</dict>
+</plist>
