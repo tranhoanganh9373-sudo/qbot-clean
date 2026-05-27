@@ -1,0 +1,92 @@
+========================================================================
+Phase B Sidecar v20 — train24 + count_change_12m (shareholders)
+========================================================================
+IS  : 2017-01 ~ 2020-12 (48 months)
+OOS : 2021-05 ~ 2026-04 (60 months)
+λ candidates: [0.1, 0.2, 0.3]
+sign: -1 (locked Phase A, immutable)
+factor: count_change_12m (locked Phase A)
+mode: FULL (IS sweep → lock → OOS)
+
+[step 1] load prediction cache
+[pred] cache = v17_dens_train24_predictions.parquet; rows=559,676, dates 2017-01-03 ~ 2026-04-30, instruments=300
+
+[step 2] build PIT factor panel (announce_date ≤ T)
+[share] cache rows=23,341, codes=289, announce 2013-01-19 ~ 2026-05-25
+[panel] pred axis codes (6-digit): 300
+[panel] month-first sampling points: 112
+[panel] monthly factor cells: 33,600 (27,794 non-NaN = 82.7%)
+[panel] pred axis × z_factor rows=559,676 (non-zero=501,858)
+
+
+[IS] sweep λ ∈ [0.1, 0.2, 0.3] (2017-01 ~ 2020-12, 48 months)
+
+  --- is_lam0.10  λ=0.1 ---
+  [adj] is_lam0.10 λ=0.1 sign=-1 rows=559,676
+[74229:MainThread](2026-05-26 02:52:38,263) INFO - qlib.Initialization - [config.py:452] - default_conf: client.
+[74229:MainThread](2026-05-26 02:52:38,264) INFO - qlib.Initialization - [__init__.py:75] - qlib successfully initialized based on client settings.
+[74229:MainThread](2026-05-26 02:52:38,264) INFO - qlib.Initialization - [__init__.py:77] - data_path={'__DEFAULT_FREQ': PosixPath('/Volumes/SSD/finance/claude_finance/data_cache/qlib_baidu')}
+      1/48 2017-01: abs_ret= +0.64%  picks=4.3
+     12/48 2017-12: abs_ret= +5.28%  picks=3.0
+     24/48 2018-12: abs_ret= +0.10%  picks=4.2
+     36/48 2019-12: abs_ret=+22.85%  picks=3.7
+     48/48 2020-12: abs_ret= -5.30%  picks=3.0
+    >> IS Calmar=5.72 Sharpe=1.64 ann=85.65% MDD=-14.98%
+
+  --- is_lam0.20  λ=0.2 ---
+  [adj] is_lam0.20 λ=0.2 sign=-1 rows=559,676
+      1/48 2017-01: abs_ret= +0.69%  picks=4.2
+     12/48 2017-12: abs_ret= +7.32%  picks=4.2
+     24/48 2018-12: abs_ret= -2.17%  picks=4.5
+     36/48 2019-12: abs_ret=+22.76%  picks=3.7
+     48/48 2020-12: abs_ret= -4.97%  picks=3.0
+    >> IS Calmar=5.82 Sharpe=1.68 ann=87.15% MDD=-14.98%
+
+  --- is_lam0.30  λ=0.3 ---
+  [adj] is_lam0.30 λ=0.3 sign=-1 rows=559,676
+      1/48 2017-01: abs_ret= +0.69%  picks=4.2
+     12/48 2017-12: abs_ret= +7.14%  picks=4.4
+     24/48 2018-12: abs_ret= -2.17%  picks=4.5
+     36/48 2019-12: abs_ret=+22.76%  picks=3.7
+     48/48 2020-12: abs_ret= -5.96%  picks=3.2
+    >> IS Calmar=6.09 Sharpe=1.74 ann=91.22% MDD=-14.98%
+
+[saved] /Volumes/SSD/finance/claude_finance/examples/v20_shareholders_phase_b_is_grid.csv
+
+=== IS λ sweep (sorted desc by Calmar) ===
+phase  lam   cum_%  ann_%  sharpe  mdd_%  calmar  win_%  avg_picks  n_months
+   IS  0.3 1236.96  91.22    1.74 -14.98    6.09  66.67       3.72        48
+   IS  0.2 1126.64  87.15    1.68 -14.98    5.82  66.67       3.67        48
+   IS  0.1 1087.92  85.65    1.64 -14.98    5.72  66.67       3.66        48
+
+[lock] best IS: λ=0.3  IS Calmar=6.09
+[saved] /Volumes/SSD/finance/claude_finance/examples/v20_shareholders_phase_b_locked_lam.json
+
+[OOS] single run (2021-05 ~ 2026-04, 60 months)
+  locked: λ=0.3  sign=-1
+  [adj] oos_lam0.30 λ=0.3 sign=-1 rows=559,676
+      1/60 2021-05: abs_ret=+40.77%  picks=1.0
+     12/60 2022-04: abs_ret=-18.43%  picks=3.8
+     24/60 2023-04: abs_ret=+15.98%  picks=3.4
+     36/60 2024-04: abs_ret=+14.46%  picks=3.3
+     48/60 2025-04: abs_ret=+15.64%  picks=4.2
+     60/60 2026-04: abs_ret= +6.38%  picks=2.4
+
+[saved] /Volumes/SSD/finance/claude_finance/examples/v20_shareholders_phase_b_oos_stats.csv
+
+========================================================================
+=== FINAL COMPARISON v20 shareholders ===
+========================================================================
+  Phase2_v2_baseline            : Calmar +0.86
+  v19.4_margin_v2               : Calmar +1.28
+  v19.6_amplitude_v2            : Calmar +0.58
+  v20_industry_60d_v2           : Calmar +0.84
+  v20_vol_z_5d_v2               : Calmar +0.54
+  v20_super_big_net_v2          : Calmar -0.07
+
+v20 shareholders OOS [λ=0.3]:
+   Calmar=0.39  Sharpe=0.5  ann=13.15%  MDD=-33.74%  cum=85.46%  win%=48.33
+
+[verdict] abort (OOS Calmar < 0.50)
+
+[saved] /Volumes/SSD/finance/claude_finance/examples/v20_shareholders_phase_b_summary.md

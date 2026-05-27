@@ -1,0 +1,25 @@
+======================================================================
+v19.5 team_coin OOS Phase 2 v3 retest summary
+======================================================================
+locked config: c5_tc20_l020 λ=(tc5=0.0, tc20=0.2, margin=0.0)
+OOS window  : 2021-05 ~ 2026-04 (60 months)
+
+  cum_%      : 113.86
+  ann_%      : 16.42
+  sharpe     : 0.57
+  mdd_%      : -43.33
+  calmar     : 0.38
+  win_%      : 56.67
+  avg_picks  : 3.31
+
+Reference baselines (v2 clean cache, 60m OOS 2021-05~2026-04):
+  baseline train24      : Calmar=0.86  Sharpe=0.81  ann=29.12%
+  v19.4 (m5+m20 0.10)   : Calmar=1.28  Sharpe=0.94  ann=40.19%
+  v19.5 (tc20 0.20)     : Calmar=0.56  (abort)
+  v19.6 (amp 0.30)      : Calmar=0.58  Sharpe=0.67  ann=21.78%
+
+Phase 2 v3 retrained cache (60m OOS):
+  baseline train24      : Calmar=0.77
+  v19.4 (m5+m20 0.10)   : Calmar=0.62
+  v19.6 (amp 0.30) PROD : Calmar=1.29
+  v19.5 (tc20 0.20)     : Calmar=0.38  <-- this task

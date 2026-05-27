@@ -1,0 +1,25 @@
+======================================================================
+v19.7 stacked OOS Phase 2 v3 retest summary
+======================================================================
+locked config: c6_a020_m020 λ=(a20=0.2, m5=0.2)
+OOS window  : 2021-05 ~ 2026-04 (60 months)
+
+  cum_%      : 280.7
+  ann_%      : 30.65
+  sharpe     : 0.87
+  mdd_%      : -32.03
+  calmar     : 0.96
+  win_%      : 48.33
+  avg_picks  : 3.24
+
+Reference baselines (v2 clean cache, 60m OOS 2021-05~2026-04):
+  baseline train24      : Calmar=0.86  Sharpe=0.81  ann=29.12%
+  v19.4 (m5+m20 0.10)   : Calmar=1.28  Sharpe=0.94  ann=40.19%
+  v19.6 (amp 0.30)      : Calmar=0.58  Sharpe=0.67  ann=21.78%
+  v19.7 (a20+m5 0.20)   : Calmar=0.65  Sharpe=0.69  ann=12.23%
+
+Phase 2 v3 retrained cache (60m OOS):
+  baseline train24      : Calmar=0.77
+  v19.4 (m5+m20 0.10)   : Calmar=0.62
+  v19.6 (amp 0.30) PROD : Calmar=1.29
+  v19.7 (a20+m5 0.20)   : Calmar=0.96  <-- this task

@@ -1,0 +1,21 @@
+======================================================================
+v19.6 OOS Phase 2 v3 retest summary
+======================================================================
+locked config: c6_a20_l030 lam=(a5=0.0, a20=0.3, margin=0.0)
+OOS window  : 2021-05 ~ 2026-04 (60 months)
+
+  cum_%      : 337.8
+  ann_%      : 34.36
+  sharpe     : 0.92
+  mdd_%      : -26.66
+  calmar     : 1.29
+  win_%      : 51.67
+  avg_picks  : 3.37
+
+Reference baselines (v2 clean cache, 60m OOS 2021-05~2026-04):
+  baseline train24   : Calmar=0.86  Sharpe=0.81  ann=29.12%  MDD=-33.74%
+  v19.4 (m5+m20 0.1) : Calmar=1.28  Sharpe=0.94  ann=40.19%  MDD=-31.32%
+  v19.6 (amp 0.30)   : Calmar=0.58  Sharpe=0.67  ann=21.78%  MDD=-37.24%
+
+Phase 2 v3 retrained cache (task #79):
+  v19.4 (m5+m20 0.1) : Calmar=0.62 (re-tested, see v19_4_oos_phase2_v3_summary.txt)
