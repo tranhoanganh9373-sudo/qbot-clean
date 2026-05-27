@@ -34,9 +34,23 @@ htmlcov/
 .env
 .env.local
 
-# Local data cache (raw market data)
+# Local data cache (raw market data + runtime artifacts, 9 GB+)
 data_cache/*
 !data_cache/.gitkeep
+# Exception: jin-ce 借鉴 Phase B 失败模式规则档案 (静态 config, 6 KB)
+!data_cache/phase_b_failure_modes.json
+
+# Local backups (timestamped state snapshots, 不入库)
+backup/
+
+# Runtime logs (fetch/build/training logs, 不入库)
+logs/
+
+# Reference repos clones (jin-ce-zhi-suan etc, ~1GB, 不入库)
+references/
+
+# Model training artifacts (catboost/lightgbm 产物, 不入库)
+catboost_info/
 
 # User-provided raw market data (often > GitHub 100MB limit and may be source-licensed)
 data/*.csv
