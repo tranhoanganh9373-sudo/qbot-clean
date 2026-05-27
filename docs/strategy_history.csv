@@ -1,0 +1,20 @@
+date,version,sidecar_factor,lambda,sign,IS_metric,OOS_metric,n_months,spearman_orthogonality,verdict,notes
+2026-05-25,v17_dens_train24,(baseline qlib Alpha158 + DEnsemble TopK K=8),-,-,-,0.42 corrupt / 0.77 clean,60,-,BASELINE,Phase 2 corrupt → clean retrain shifted OOS Calmar 0.42→0.77 揭示 corrupt features 虚高
+2026-05-25,v19.1,(no sidecar),-,-,-,0.42(v2)/0.77(v3),60,-,REFERENCE,train24 baseline reference point
+2026-05-25,v19.4,margin_5d+margin_20d,0.10+0.10,-1/-1,IS Calmar 1.67,0.61(v2)/0.62(v3),60,ind,SHADOW(was main before v19.6),Phase 4 sidecar v2 technical margin 5d/20d lock c4_m5m20_l020
+2026-05-25,v19.5_team_coin,intraday × overnight reversal,0.20,+1,IS Calmar 0.77,0.56,60,ind,ABORT,IS 0.77 → OOS 0.56 < v19.4 0.61 abort
+2026-05-25,v19.6,amp_imb_20d,0.30,-1,IS Calmar 0.71,0.79(v2)/1.29(v3),60,ind,EX-PRODUCTION / NOW SHADOW,replaced by v19.10 since 2026-05-27; v3 retrain cache 0.79→1.29
+2026-05-25,v19.7_stacked,amp_imb_20d + m5,0.20+0.20,-1/-1,IS Calmar 0.76,0.65,60,Spearman |rho|=0.02 独立但失败,ABORT,弱 m5 拖累强 a20 "弱因子叠强因子=噪声" 教训
+2026-05-25,v19.8_DT,dragontiger net_buy_pct_evt,0.20,+1,IS Calmar 0.94 (4 combos 全 0.57+),0.42 = baseline,60,ind,ABORT,sandbox 0 OOS events → z_evt=0 → final=z_pred 退化 (数据 gap)
+2026-05-25,v19.9_unlock,unlock combo_neg_pct,0.30,-1,IS Calmar 2.70,0.09,60,ind,ABORT,IS 2.70 → OOS 0.09 (cum 16.88%) 衰减 -97% 严重 overfit
+2026-05-25,v19.10_stacked,amp_imb_20d + JZF (集合竞价勾魂翻),0.30+0.10,-1/+1,-,2.12 (vs v19.6 1.29 +64%),60,|rho|=0.108 中度独立,**PRODUCTION since 2026-05-27**,JZF=overnight gap; v19.6 → v19.10 +64% Calmar
+2026-05-26,v20_industry_60d,industry_adj_ret_60d,0.10,+1,IS Calmar 2.95,0.84 ≈ baseline,32,|rho|=0.294 边际,ABORT,n_months 32 thin-sample + 边际相关; baidu_kline 2014-2017 sparse ceiling
+2026-05-26,v20_vol_z_5d,volume z-score 5d,0.30,+1,IS Calmar 3.39,0.54,35,ind,ABORT,IS→OOS overfit -84%; n_months 35 thin-sample
+2026-05-26,v20_super_big_net,sina fund_flow super_big_net,0.30,+1,IS Calmar 2.01,-0.07 catastrophic,36,ind,ABORT,IS→OOS -103.5% catastrophic; 同 v19.7/v19.9 thin-sample 模式
+2026-05-26,v20_shareholders,shareholders count_change_12m,0.30,-1,IS Calmar 6.09 (历史最高),0.39,49,ind,ABORT,IS→OOS -93.6% decay; 历史 Phase B IS Calmar 最高的也跌
+2026-05-27,v21_value_PE_static,fundamental PE_static,-,-1,ICIR -0.083,-,35,ind,ABORT_Phase_A,ICIR < 0.4 + n_months < 60 双 gate fail
+2026-05-27,v21_value_PE_TTM,fundamental PE_TTM,-,-1,ICIR -0.353,-,35,ind,ABORT_Phase_A,ICIR < 0.4 + n_months < 60
+2026-05-27,v21_value_PB_orig,fundamental PB,-,-1,ICIR -0.483 (artifact),-,35,ind,ABORT_Phase_A,看似强 -0.483 但是 2014-2017 sparse sample selection artifact
+2026-05-27,v21_value_PB_extended,fundamental PB after 2014-2017 backfill,-,+1 (sign flipped!),ICIR +0.171 真值,-,82,ind,ABORT_Phase_A,backfill 235/300 codes 200k rows; sign 反转揭示 PB 在 CSI300 真值是 noise
+2026-05-27,v21_52w_high_dist_20d,distance from 52w high,-,±1,ICIR ±0.601,-,22-34,|rho|=0.41-0.58 with amp_imb_20d ✗,ABORT_Phase_A,信息重叠 amp_imb_20d (同源反转 proxy) + n_months thin
+2026-05-27,v21_earnings_net_up_90d,analyst net upgrades 90d,-,+1,ICIR +1.81 (历史最高!),-,47,|rho|=0.14 独立,ABORT_Phase_A,n_months 47 < 60 + 真值是 attention proxy (EM API forecast forward-looking only)
