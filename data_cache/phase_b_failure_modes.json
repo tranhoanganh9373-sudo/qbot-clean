@@ -1,0 +1,165 @@
+{
+  "version": "1.0",
+  "as_of": "2026-05-27",
+  "comment": "Phase B 候选自动 gate. 借鉴 jin-ce-zhi-suan AnalysisAgent → prompt_context_patch 反馈回路, 把 4 次失败教训 (v19.7/v19.9/super_big_net/shareholders) 结构化, 防同源失败再次发生.",
+  "thresholds": {
+    "n_months_hard_min": 60,
+    "n_months_safe_min": 72,
+    "is_calmar_thin_sample": 1.5,
+    "is_calmar_alarm": 2.5,
+    "is_calmar_extreme": 5.0,
+    "spearman_orthogonality_max": 0.30,
+    "icir_min": 0.4
+  },
+  "failure_modes": [
+    {
+      "id": "thin_sample_overfit",
+      "description": "n_months < 60 AND IS_Calmar > 1.5 — 薄样本 + 强 IS = OOS -88%~-116% 衰减 (历史 4/4 命中)",
+      "rules": [
+        {"key": "n_months", "op": "<", "threshold": 60},
+        {"key": "is_calmar", "op": ">", "threshold": 1.5}
+      ],
+      "logic": "all",
+      "severity": "reject",
+      "examples": ["v19.9", "super_big_net", "shareholders", "vol_z_5d (volume z-score)"]
+    },
+    {
+      "id": "extreme_is_calmar_alarm",
+      "description": "IS Calmar > 2.5 蝙蝠级 overfit; 必须 n_months >= 72 (5 yr+) 才允许进 OOS",
+      "rules": [
+        {"key": "is_calmar", "op": ">", "threshold": 2.5},
+        {"key": "n_months", "op": "<", "threshold": 72}
+      ],
+      "logic": "all",
+      "severity": "reject",
+      "examples": ["unlock combo_neg_pct (IS 2.70, n=49)", "super_big_net (IS 2.01, n=36)", "shareholders count_change_12m (IS 6.09, n=49)"]
+    },
+    {
+      "id": "extreme_is_calmar_red_alarm",
+      "description": "IS Calmar > 5.0 一律拒, 99% 概率是 IS-leak / 数据 bug / sample selection",
+      "rules": [{"key": "is_calmar", "op": ">", "threshold": 5.0}],
+      "logic": "all",
+      "severity": "reject",
+      "examples": ["shareholders count_change_12m IS 6.09"]
+    },
+    {
+      "id": "lambda_at_sweep_max",
+      "description": "锁定 lambda == sweep 最大值 -> 边界 overfit. 单独不 reject, 警告与其他 mode 联合判断",
+      "rules": [{"key": "lambda_at_max", "op": "==", "threshold": true}],
+      "logic": "all",
+      "severity": "warn",
+      "examples": ["v19.9 (lambda=0.30 max)", "super_big_net (lambda=0.30 max)", "shareholders (lambda=0.30 max)"]
+    },
+    {
+      "id": "spearman_overlap_with_production",
+      "description": "Phase A Spearman |rho| >= 0.30 跟现 production 因子重叠. 即使独立 OOS 通过, stack 没增量 alpha",
+      "rules": [{"key": "spearman_max_abs", "op": ">=", "threshold": 0.30}],
+      "logic": "all",
+      "severity": "warn",
+      "examples": ["52w high dist_20d (rho vs amp_imb 0.41-0.58)", "industry_adj_60d (rho 0.294)"]
+    },
+    {
+      "id": "icir_below_min",
+      "description": "ICIR_abs < 0.4 信号弱, 跨 regime 不稳, 浪费 OOS budget",
+      "rules": [{"key": "icir_abs", "op": "<", "threshold": 0.4}],
+      "logic": "all",
+      "severity": "reject",
+      "examples": ["Value PE_static (ICIR -0.083)", "PE_TTM (-0.353)", "Earnings revision 真值 (-0.601 sign)"]
+    },
+    {
+      "id": "icir_too_strong_unverified",
+      "description": "ICIR_abs > 1.0 配 n_months < 72 = 薄样本 noise-fit. 必须扩大样本验证否则拒",
+      "rules": [
+        {"key": "icir_abs", "op": ">", "threshold": 1.0},
+        {"key": "n_months", "op": "<", "threshold": 72}
+      ],
+      "logic": "all",
+      "severity": "reject",
+      "examples": ["shareholders count_change_12m (ICIR 1.044, n=49)", "industry_adj_ret_60d (ICIR 1.112, n=32)"]
+    }
+  ],
+  "history": {
+    "failures": [
+      {
+        "candidate": "v19.7 stacked (amp_20d + m5)",
+        "n_months": 60,
+        "is_calmar": 0.76,
+        "lambda_locked": [0.20, 0.20],
+        "lambda_max": [0.30, 0.20],
+        "oos_calmar": 0.65,
+        "vs_v19_6": -0.177,
+        "fired_modes": [],
+        "lesson": "Spearman |rho| < 0.10 必要不充分 - m5 OOS 信号衰减, stack 到强因子 amp_imb_20d 上是噪声拖累. (本案例 gate 未捕获, 真实 cost ~6% Calmar)"
+      },
+      {
+        "candidate": "v19.9 unlock combo_neg_pct",
+        "n_months": 49,
+        "is_calmar": 2.70,
+        "lambda_locked": 0.30,
+        "lambda_max": 0.30,
+        "oos_calmar": 0.09,
+        "vs_baseline": -0.97,
+        "fired_modes": ["thin_sample_overfit", "extreme_is_calmar_alarm", "lambda_at_sweep_max"],
+        "lesson": "2021 注册制扩容 unwind 集中度因果链断, 历史 unlock alpha OOS 失效"
+      },
+      {
+        "candidate": "super_big_net (大单净流入)",
+        "n_months": 36,
+        "is_calmar": 2.01,
+        "lambda_locked": 0.30,
+        "lambda_max": 0.30,
+        "oos_calmar": -0.07,
+        "vs_baseline": -1.04,
+        "fired_modes": ["thin_sample_overfit", "extreme_is_calmar_alarm", "lambda_at_sweep_max"],
+        "lesson": "样本仅 3 年 (Phase A 2017-2020), IPO outlier 主导横截面"
+      },
+      {
+        "candidate": "shareholders count_change_12m",
+        "n_months": 49,
+        "is_calmar": 6.09,
+        "lambda_locked": 0.30,
+        "lambda_max": 0.30,
+        "icir": 1.044,
+        "oos_calmar": 0.39,
+        "vs_baseline": -0.55,
+        "fired_modes": ["thin_sample_overfit", "extreme_is_calmar_alarm", "extreme_is_calmar_red_alarm", "lambda_at_sweep_max", "icir_too_strong_unverified"],
+        "lesson": "IS Calmar 6.09 是 4 次 Phase B 历史最高, 蝙蝠级 alarm 应直接拒. 161 IPO records |pct|>100 拉爆 z-score 横截面"
+      }
+    ],
+    "successes": [
+      {
+        "candidate": "v19.4 (m5+m20)",
+        "n_months": 60,
+        "is_calmar": 0.85,
+        "lambda_locked": [0.10, 0.10],
+        "lambda_max": [0.20, 0.20],
+        "oos_calmar": 0.61,
+        "vs_baseline": 0.45,
+        "fired_modes": [],
+        "verdict": "production v19.4 (现 shadow)"
+      },
+      {
+        "candidate": "v19.6 (amp_imb_20d)",
+        "n_months": 60,
+        "is_calmar": 0.85,
+        "lambda_locked": 0.30,
+        "lambda_max": 0.30,
+        "oos_calmar": 0.79,
+        "vs_baseline": 0.88,
+        "fired_modes": ["lambda_at_sweep_max"],
+        "verdict": "production v19.6 -> 升级 v19.10 base"
+      },
+      {
+        "candidate": "v19.10 stacked (amp_imb_20d + JZF)",
+        "n_months": 60,
+        "is_calmar": 0.85,
+        "lambda_locked": [0.30, 0.10],
+        "lambda_max": [0.30, 0.20],
+        "oos_calmar": 2.12,
+        "vs_v19_6": 0.64,
+        "fired_modes": ["lambda_at_sweep_max"],
+        "verdict": "current production"
+      }
+    ]
+  }
+}
