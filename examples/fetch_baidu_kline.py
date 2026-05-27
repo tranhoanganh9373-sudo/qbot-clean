@@ -23,6 +23,9 @@ import requests
 OUT_PATH = Path(__file__).resolve().parent.parent / "data_cache" / "baidu_kline.parquet"
 CHECKPOINT = Path(__file__).resolve().parent.parent / "data_cache" / "baidu_kline_partial.parquet"
 UNIVERSE_PATH = Path(__file__).resolve().parent.parent / "data_cache" / "universe.csv"
+# baidu qfq endpoint 历史有 ~27 股 corrupt (neg close / extreme low), 由 fetch_corrupt_fix_v3_extended.py
+# 用腾讯 hfq 修过. 本脚本 merge 时跳过这些 code, 防止 hfq fix 被 qfq 重新覆盖.
+CORRUPT_CODES_PATH = Path(__file__).resolve().parent.parent / "data_cache" / "corrupt_codes_v3.txt"
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/117.0.0.0"
 HEADERS = {
@@ -147,16 +150,57 @@ def main():
 
     print("\n[3/4] 合并 + 排序 + 写 parquet ...")
     all_parts = parts + new_parts
-    big = pd.concat(all_parts, ignore_index=True)
-    big["code"] = big["code"].astype(str).str.zfill(6)
+    if not all_parts:
+        print("  本次 fetch 0 行新数据, 主表保持不变.")
+        return
+    new_big = pd.concat(all_parts, ignore_index=True)
+    new_big["code"] = new_big["code"].astype(str).str.zfill(6)
+    new_big = new_big.dropna(subset=["date", "close"])
+
+    # corrupt-protected 股: 保留 existing hfq 数据, 不让 baidu qfq 覆盖
+    corrupt_codes: set[str] = set()
+    if CORRUPT_CODES_PATH.exists():
+        corrupt_codes = {
+            ln.strip().zfill(6)
+            for ln in CORRUPT_CODES_PATH.read_text().splitlines()
+            if ln.strip()
+        }
+        before = len(new_big)
+        new_big = new_big[~new_big["code"].isin(corrupt_codes)]
+        print(
+            f"  corrupt-protected: 跳过 {len(corrupt_codes)} 只 ({before - len(new_big):,} rows), "
+            "保留 existing hfq fix"
+        )
+
+    # Merge mode (limit=0 全量正常 daily fetch):
+    #   - existing OUT_PATH 数据保留 (fetch 失败的 code 不会丢)
+    #   - new fetch 覆盖同 (code, date) 旧数据 (drop_duplicates keep='last')
+    # PoC mode (limit > 0): 直接写 new_big, 不读 existing (跟历史行为一致)
+    if OUT_PATH.exists() and not args.limit:
+        old = pd.read_parquet(OUT_PATH)
+        old["code"] = old["code"].astype(str).str.zfill(6)
+        old_codes = old["code"].nunique()
+        big = pd.concat([old, new_big], ignore_index=True)
+        big = big.drop_duplicates(subset=["code", "date"], keep="last")
+        merged_codes = big["code"].nunique()
+        new_only_codes = merged_codes - old_codes
+        print(
+            f"  merge: existing {old_codes} codes + new fetch {new_big['code'].nunique()} codes "
+            f"→ {merged_codes} codes ({new_only_codes:+d})"
+        )
+    else:
+        big = new_big
+
     big = big.sort_values(["code", "date"]).reset_index(drop=True)
-    big = big.dropna(subset=["date", "close"])
     print(
         f"  total rows: {len(big):,}  unique codes: {big['code'].nunique()}  "
         f"date range: {big['date'].min().date()} → {big['date'].max().date()}"
     )
 
-    big.to_parquet(OUT_PATH, index=False)
+    # Atomic write: 写 .tmp 后 rename, 防止写入中崩溃损坏主表
+    tmp_path = OUT_PATH.with_suffix(".parquet.tmp")
+    big.to_parquet(tmp_path, index=False)
+    tmp_path.replace(OUT_PATH)
     print(f"\n[4/4] saved: {OUT_PATH} ({OUT_PATH.stat().st_size/1e6:.1f} MB)")
 
     if CHECKPOINT.exists() and not args.limit:
