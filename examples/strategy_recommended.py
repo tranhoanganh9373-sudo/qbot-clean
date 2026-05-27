@@ -34,6 +34,8 @@ import akshare as ak
 import numpy as np
 import pandas as pd
 
+from claude_finance.scan_cache import cache_or_fetch
+
 warnings.filterwarnings("ignore")
 
 DATA_PATH = Path(__file__).resolve().parent.parent / "data_cache" / "long_history.parquet"
@@ -96,8 +98,21 @@ def build_features(market):
 
 
 def fetch_pe_pb_aligned(dates: pd.DatetimeIndex):
-    pe_df = ak.stock_market_pe_lg()
-    pb_df = ak.stock_market_pb_lg()
+    """Cache PE/PB raw 到 ``data_cache/scan_cache/ak_stock_market_{pe,pb}_lg.parquet``,
+    TTL 24h. 大盘 PE/PB 每日更新一次, 1 天足够.
+    """
+    pe_df = cache_or_fetch(
+        key="ak_stock_market_pe_lg",
+        fetcher=lambda: ak.stock_market_pe_lg(),
+        ttl_hours=24.0,
+    )
+    pb_df = cache_or_fetch(
+        key="ak_stock_market_pb_lg",
+        fetcher=lambda: ak.stock_market_pb_lg(),
+        ttl_hours=24.0,
+    )
+    pe_df = pe_df.copy()
+    pb_df = pb_df.copy()
     pe_df["日期"] = pd.to_datetime(pe_df["日期"])
     pb_df["日期"] = pd.to_datetime(pb_df["日期"])
     pe = pe_df.set_index("日期")["平均市盈率"].sort_index()

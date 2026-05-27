@@ -23,17 +23,28 @@ from claude_finance.decision import (
     analyze_one,
     render_decision_report,
 )
+from claude_finance.scan_cache import cache_or_fetch
 
 CSV_PATH = Path(__file__).resolve().parent.parent / "data" / "deepseek_trading.csv"
 TAIL_BARS = 180
 
 
 def _try_fetch_index(ak_symbol: str) -> pd.DataFrame | None:
-    """Best-effort akshare fetch; returns None on any failure (e.g. blocked network)."""
+    """Best-effort akshare fetch; returns None on any failure (e.g. blocked network).
+
+    Cache: ``data_cache/scan_cache/ak_stock_zh_index_daily_{ak_symbol}.parquet``,
+    TTL 24h (index daily, 当日刷一次).  cache_or_fetch 已经在 fetch 失败时自动
+    fallback 到 stale cache; 这里的 try/except 兜底 "完全无 cache 且网络挂"
+    (会 re-raise) -> 返回 None 保持原 best-effort 语义.
+    """
     try:
         import akshare as ak
 
-        df = ak.stock_zh_index_daily(symbol=ak_symbol)
+        df = cache_or_fetch(
+            key=f"ak_stock_zh_index_daily_{ak_symbol}",
+            fetcher=lambda: ak.stock_zh_index_daily(symbol=ak_symbol),
+            ttl_hours=24.0,
+        )
         df["date"] = pd.to_datetime(df["date"])
         return df.set_index("date").tail(TAIL_BARS)
     except Exception as e:

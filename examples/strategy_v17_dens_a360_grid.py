@@ -1,16 +1,24 @@
-"""v15 = v13 全A + regime gate (4 档: bear空仓/panic半仓/drawdown半仓/normal满仓).
+"""参数化 v17 grid sweep — DoubleEnsemble + Alpha360 版.
 
-跟 v13 全A 同, 但加入市场状态判断:
-  market proxy = 全A 每日中位数 close 等权 index (合成)
-  bear     : 价格 < MA200 × 0.95     -> K=0 空仓
-  panic    : 20日年化波动 > 35%      -> K=4 drop=1 半仓
-  drawdown : 60日回报 < -15%         -> K=4 drop=1 半仓
-  normal   : 其余                   -> K=8 drop=2 满仓
+模型 + 因子双替换:
+  Alpha158 (158 横截面 rolling stats) → Alpha360 (60 日 × 6 字段 lagged)
+  Single-fold benchmark: Alpha158 DEns ICIR=1.64, Alpha360 DEns ICIR=1.94 (+18%)
+  本脚本验证 60月 walk-forward 下 Alpha360 是否仍领先 Alpha158.
 
-PoC 时段: 2022-01 → 2023-12 (24 月)
-对照 v13 全A (无 regime) 同时段 cumulative -56% (14 月 OOS).
+设计:
+  优先读 data_cache/v17_dens_a360_predictions.parquet (DEns + Alpha360 pred),
+  缺月时训新月 (~40-60s/月, 比 Alpha158 DEns 慢 1.5-2x 因为 360 features).
 
-Run:  python examples/strategy_v15_fullA_regime.py
+CLI 同 LGB/DEns 版:
+  --k --drop --tag --first-test --last-test --months
+  --capital --stop-loss --vol-target --regime
+
+输出:
+  examples/v17_dens_a360_<tag>_stats.csv
+
+Run:
+  python examples/strategy_v17_dens_a360_grid.py --k 8 --drop 2 \\
+      --tag dens_a360_k8d2_60m --first-test 2021-05 --last-test 2026-04 --months 60
 """
 from __future__ import annotations
 
@@ -24,8 +32,8 @@ import pandas as pd
 import qlib
 from dateutil.relativedelta import relativedelta
 from qlib.constant import REG_CN
-from qlib.contrib.data.handler import Alpha158
-from qlib.contrib.model.gbdt import LGBModel
+from qlib.contrib.data.handler import Alpha360
+from qlib.contrib.model.double_ensemble import DEnsembleModel
 from qlib.data import D
 from qlib.data.dataset import DatasetH
 
@@ -33,19 +41,20 @@ warnings.filterwarnings("ignore")
 
 ROOT = Path(__file__).resolve().parent.parent
 QLIB_DIR = str(ROOT / "data_cache" / "qlib_baidu")
-PARQUET = ROOT / "data_cache" / "baidu_kline.parquet"
 INDEX_PARQUET = ROOT / "data_cache" / "index_kline.parquet"
 INDEX_CODE = "sh000300"
 OUT_DIR = Path(__file__).resolve().parent
-ARTIFACT_PRED = ROOT / "data_cache" / "v17_predictions.parquet"
-ARTIFACT_DAILY = ROOT / "data_cache" / "v17_daily_returns.csv"
+PRED_CACHE = ROOT / "data_cache" / "v17_dens_a360_predictions.parquet"
 
 MARKET = "csi300"
 TRAIN_MONTHS = 12
 PORTFOLIO_VALUE = 5e4
 
+# CLI 覆盖 (默认 v17 值)
 K_NORMAL = 8
 DROP_NORMAL = 2
+STOP_LOSS_PCT = 0.0      # 0=off; e.g. 0.10 = -10% 单股止损
+VOL_TARGET_ANN = 0.0     # 0=off; e.g. 0.30 = 30% 年化目标 vol, K 动态缩放
 K_HALF = 4
 DROP_HALF = 1
 BEAR_MA_RATIO = 0.95
@@ -75,10 +84,20 @@ def is_limit_down(sym, chg):
     return chg <= thresh
 
 
-LGB_PARAMS = dict(
-    loss="mse", colsample_bytree=0.8879, learning_rate=0.0421,
-    subsample=0.8789, lambda_l1=205.6999, lambda_l2=580.9768,
-    max_depth=8, num_leaves=210, num_threads=1,
+DENS_PARAMS = dict(
+    base_model="gbm",
+    loss="mse",
+    num_models=3,
+    enable_sr=True,
+    enable_fs=True,
+    alpha1=1.0,
+    alpha2=1.0,
+    bins_sr=10,
+    bins_fs=5,
+    decay=0.5,
+    sample_ratios=[0.8, 0.7, 0.6, 0.5, 0.4],
+    sub_weights=[1, 0.2, 0.2],
+    epochs=20,
 )
 
 
@@ -92,16 +111,10 @@ def month_end(d):
 
 
 def build_market_proxy() -> pd.Series:
-    """读 index_kline.parquet 取 SH000300 close 作 regime detector."""
-    print(f"[regime] 加载 {INDEX_PARQUET.name} 取 {INDEX_CODE} 作市场指标 ...")
     df = pd.read_parquet(INDEX_PARQUET)
     df = df[df["code"] == INDEX_CODE].copy()
     df["date"] = pd.to_datetime(df["date"])
-    proxy = df.set_index("date")["close"].sort_index()
-    print(f"  {INDEX_CODE} 真实指数: {len(proxy)} 天, "
-          f"{proxy.index[0].date()} → {proxy.index[-1].date()}")
-    print(f"  start={proxy.iloc[0]:.1f}  end={proxy.iloc[-1]:.1f}")
-    return proxy
+    return df.set_index("date")["close"].sort_index()
 
 
 def regime_for_day(td, proxy):
@@ -114,17 +127,14 @@ def regime_for_day(td, proxy):
     px = proxy.iloc[pos]
     if px < ma200 * BEAR_MA_RATIO:
         return 0, 0, "bear"
-
     rets20 = proxy.iloc[pos - 19: pos + 1].pct_change().dropna()
     vol_ann = rets20.std() * np.sqrt(252) if len(rets20) > 0 else 0
     if vol_ann > PANIC_VOL_ANN:
         return K_HALF, DROP_HALF, "panic"
-
     if pos >= 60:
         ret_60d = proxy.iloc[pos] / proxy.iloc[pos - 60] - 1
         if ret_60d < DRAWDOWN_60D:
             return K_HALF, DROP_HALF, "drawdown"
-
     return K_NORMAL, DROP_NORMAL, "normal"
 
 
@@ -139,20 +149,37 @@ def get_price_data(start, end):
 
 
 _pred_cache: dict[str, pd.Series] = {}
+_pred_disk_df: pd.DataFrame | None = None
+
+
+def _load_pred_from_disk(month_key: str) -> pd.Series | None:
+    global _pred_disk_df
+    if not PRED_CACHE.exists():
+        return None
+    if _pred_disk_df is None:
+        _pred_disk_df = pd.read_parquet(PRED_CACHE)
+    df = _pred_disk_df[_pred_disk_df["month"] == month_key]
+    if len(df) == 0:
+        return None
+    df = df.set_index(["datetime", "instrument"])
+    return df["score"]
 
 
 def get_pred_for_month(test_month_start):
     key = test_month_start.strftime("%Y-%m")
     if key in _pred_cache:
         return _pred_cache[key]
+    cached = _load_pred_from_disk(key)
+    if cached is not None:
+        _pred_cache[key] = cached
+        return cached
     test_start = month_start(test_month_start)
     test_end = month_end(test_month_start)
     train_start = month_start(test_month_start - relativedelta(months=TRAIN_MONTHS))
     valid_start = month_start(test_month_start - relativedelta(months=1))
     train_end = month_end(test_month_start - relativedelta(months=2))
     valid_end = month_end(test_month_start - relativedelta(months=1))
-
-    handler = Alpha158(
+    handler = Alpha360(
         start_time=train_start, end_time=test_end,
         fit_start_time=train_start, fit_end_time=train_end,
         instruments=MARKET,
@@ -162,40 +189,28 @@ def get_pred_for_month(test_month_start):
         "valid": (valid_start, valid_end),
         "test": (test_start, test_end),
     })
-    model = LGBModel(**LGB_PARAMS)
+    model = DEnsembleModel(**DENS_PARAMS)
     model.fit(dataset)
     pred = model.predict(dataset, segment="test")
+    if isinstance(pred, pd.DataFrame):
+        pred = pred.iloc[:, 0]
     _pred_cache[key] = pred
-    _persist_predictions(key, pred)
+    _persist_pred(key, pred)
     return pred
 
 
-def _persist_predictions(month_key: str, pred: pd.Series) -> None:
-    """Append predictions to parquet (idempotent by month_key)."""
+def _persist_pred(month_key: str, pred: pd.Series) -> None:
+    """每月训完追加 pred 到磁盘 cache (idempotent by month)."""
     new_df = pred.to_frame("score").reset_index()
     new_df["month"] = month_key
-    if ARTIFACT_PRED.exists():
-        old = pd.read_parquet(ARTIFACT_PRED)
+    if PRED_CACHE.exists():
+        old = pd.read_parquet(PRED_CACHE)
         old = old[old["month"] != month_key]
         out = pd.concat([old, new_df], ignore_index=True)
     else:
         out = new_df
-    ARTIFACT_PRED.parent.mkdir(parents=True, exist_ok=True)
-    out.to_parquet(ARTIFACT_PRED, index=False)
-
-
-def _persist_daily_returns(month_key: str, dates: list, rets: list, holdings: list) -> None:
-    """Append daily returns to CSV (idempotent by month_key)."""
-    new_df = pd.DataFrame({"date": dates, "daily_ret": rets, "n_holdings": holdings})
-    new_df["month"] = month_key
-    if ARTIFACT_DAILY.exists():
-        old = pd.read_csv(ARTIFACT_DAILY)
-        old = old[old["month"] != month_key]
-        out = pd.concat([old, new_df], ignore_index=True)
-    else:
-        out = new_df
-    ARTIFACT_DAILY.parent.mkdir(parents=True, exist_ok=True)
-    out.to_csv(ARTIFACT_DAILY, index=False)
+    PRED_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    out.to_parquet(PRED_CACHE, index=False)
 
 
 def realistic_window(test_month_start, proxy, with_regime: bool = True):
@@ -216,13 +231,14 @@ def realistic_window(test_month_start, proxy, with_regime: bool = True):
         return {"abs_ret_%": 0, "avg_picks": 0, "n_days": 0,
                 "regime_days": "", "n_skipped_limit": 0}
 
-    current_holdings = {}
+    current_holdings: dict = {}
+    entry_price: dict = {}  # 用于 stop-loss 跟踪
     cash = PORTFOLIO_VALUE
     daily_ret = []
-    daily_dates: list[pd.Timestamp] = []
     n_picks_realized = []
-    last_known_price = {}
+    last_known_price: dict = {}
     n_skipped_limit = 0
+    n_stop_loss = 0
     regime_counts = {"normal": 0, "bear": 0, "panic": 0, "drawdown": 0}
 
     def mark_to_market(td_):
@@ -267,6 +283,7 @@ def realistic_window(test_month_start, proxy, with_regime: bool = True):
             impact = IMPACT_COEF * np.sqrt(min(1.0, order_amount / max(daily_amount, 1e3))) * 0.01
             cash += shares * exec_p * (1 - impact - 0.0005)
             del current_holdings[c]
+            entry_price.pop(c, None)
 
     for di, td in enumerate(test_dates):
         if di + 1 >= len(test_dates):
@@ -279,9 +296,31 @@ def realistic_window(test_month_start, proxy, with_regime: bool = True):
             topk, n_drop, label = regime_for_day(td, proxy)
         else:
             topk, n_drop, label = K_NORMAL, DROP_NORMAL, "normal"
+
+        # vol-target: 缩 cash 投放比例 (target_vol / realized_vol clip 1.0)
+        vol_scale = 1.0
+        if VOL_TARGET_ANN > 0 and td in proxy.index:
+            pos = proxy.index.get_loc(td)
+            if pos >= 20:
+                rets20 = proxy.iloc[pos - 19: pos + 1].pct_change().dropna()
+                rv = rets20.std() * np.sqrt(252) if len(rets20) > 0 else VOL_TARGET_ANN
+                vol_scale = min(VOL_TARGET_ANN / max(rv, 0.05), 1.0)
+
         regime_counts[label] += 1
 
         port_val = mark_to_market(td)
+
+        # 单股止损: 持仓跌破 entry_price * (1 - STOP_LOSS_PCT) 强制加入 to_drop
+        forced_sells: list = []
+        if STOP_LOSS_PCT > 0 and current_holdings and td in close_pv.index:
+            for c in list(current_holdings.keys()):
+                if c not in close_pv.columns or c not in entry_price:
+                    continue
+                cur_p = close_pv.loc[td, c]
+                if pd.notna(cur_p) and cur_p > 0 and entry_price[c] > 0:
+                    if cur_p / entry_price[c] - 1 < -STOP_LOSS_PCT:
+                        forced_sells.append(c)
+            n_stop_loss += len(forced_sells)
 
         if topk == 0:
             liquidate_all(next_td)
@@ -289,7 +328,6 @@ def realistic_window(test_month_start, proxy, with_regime: bool = True):
             new_port_val = mark_to_market(next_td)
             if port_val > 0:
                 daily_ret.append(new_port_val / port_val - 1)
-                daily_dates.append(next_td)
             continue
 
         scores_all = pred_unstacked.loc[td].dropna().sort_values(ascending=False)
@@ -325,6 +363,10 @@ def realistic_window(test_month_start, proxy, with_regime: bool = True):
         if excess > 0:
             extra_drop = [c for c in current_holdings if c not in to_drop and c not in target_topk]
             to_drop.extend(extra_drop[:excess])
+        # 加入 stop-loss 强卖 (去重)
+        for c in forced_sells:
+            if c not in to_drop:
+                to_drop.append(c)
         buy_candidates = [c for c in target_topk if c not in current_holdings][:n_drop]
 
         for c in to_drop:
@@ -345,8 +387,10 @@ def realistic_window(test_month_start, proxy, with_regime: bool = True):
             impact = IMPACT_COEF * np.sqrt(min(1.0, order_amount / max(daily_amount, 1e3))) * 0.01
             cash += shares * exec_p * (1 - impact - 0.0005)
             del current_holdings[c]
+            entry_price.pop(c, None)
 
-        cash_per_pick = cash / max(len(buy_candidates), 1)
+        # vol-target 缩 cash_per_pick: 高 vol 时只投部分资金
+        cash_per_pick = cash * vol_scale / max(len(buy_candidates), 1)
         for c in buy_candidates:
             if c not in open_pv.columns or next_td not in open_pv.index:
                 continue
@@ -374,35 +418,25 @@ def realistic_window(test_month_start, proxy, with_regime: bool = True):
             impact = IMPACT_COEF * np.sqrt(min(1.0, order_amount / max(daily_amount, 1e3))) * 0.01
             cash -= shares * exec_p * (1 + impact + 0.0003)
             current_holdings[c] = shares
+            entry_price[c] = exec_p
         n_picks_realized.append(len(current_holdings))
 
         new_port_val = mark_to_market(next_td)
         if port_val > 0:
             daily_ret.append(new_port_val / port_val - 1)
-            daily_dates.append(next_td)
 
     if not daily_ret:
         return {"abs_ret_%": 0, "avg_picks": 0, "n_days": 0,
                 "regime_days": "", "n_skipped_limit": n_skipped_limit}
     abs_ret = (1 + pd.Series(daily_ret)).prod() - 1
     rg = "/".join(f"{k}={v}" for k, v in regime_counts.items() if v > 0)
-    holdings_per_day = n_picks_realized[: len(daily_ret)]
-    if len(holdings_per_day) < len(daily_ret):
-        holdings_per_day += [holdings_per_day[-1] if holdings_per_day else 0] * (
-            len(daily_ret) - len(holdings_per_day)
-        )
-    _persist_daily_returns(
-        test_month_start.strftime("%Y-%m"),
-        [d.strftime("%Y-%m-%d") for d in daily_dates],
-        daily_ret,
-        holdings_per_day,
-    )
     return {
         "abs_ret_%": round(abs_ret * 100, 2),
         "avg_picks": round(np.mean(n_picks_realized), 1) if n_picks_realized else 0,
         "n_days": len(daily_ret),
         "regime_days": rg,
         "n_skipped_limit": n_skipped_limit,
+        "n_stop_loss": n_stop_loss,
     }
 
 
@@ -428,30 +462,48 @@ def annualize_metrics(returns, n_periods_per_year=12):
 
 
 def main():
+    global K_NORMAL, DROP_NORMAL, PORTFOLIO_VALUE, STOP_LOSS_PCT, VOL_TARGET_ANN
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--months", type=int, default=0,
-        help="0=full 40 months (2023-01→2026-04); >0=last N months only (PoC)",
-    )
-    parser.add_argument(
-        "--reset-artifacts", action="store_true",
-        help="Delete v17_predictions.parquet + v17_daily_returns.csv before run",
-    )
+    parser.add_argument("--k", type=int, required=True)
+    parser.add_argument("--drop", type=int, required=True)
+    parser.add_argument("--tag", type=str, required=True,
+                         help="artifact 文件名后缀, e.g. k3d2")
+    parser.add_argument("--months", type=int, default=0,
+                         help="0=use full [first-test, last-test] range; >0=truncate to last N")
+    parser.add_argument("--regime", action="store_true",
+                         help="enable regime gate (bear/panic/drawdown) — default off")
+    parser.add_argument("--capital", type=float, default=50000,
+                         help="PORTFOLIO_VALUE 起始资金 (默认 50000)")
+    parser.add_argument("--stop-loss", type=float, default=0.0,
+                         help="单股止损阈值 (0=off, e.g. 0.10 = 持仓跌 10% 强卖)")
+    parser.add_argument("--vol-target", type=float, default=0.0,
+                         help="年化波动率目标 (0=off, e.g. 0.30 = 30% target → K = K_base * target/realized)")
+    parser.add_argument("--first-test", type=str, default="2023-01",
+                         help="first test month YYYY-MM (default 2023-01)")
+    parser.add_argument("--last-test", type=str, default="2026-04",
+                         help="last test month YYYY-MM (default 2026-04)")
     args = parser.parse_args()
 
-    if args.reset_artifacts:
-        for p in (ARTIFACT_PRED, ARTIFACT_DAILY):
-            if p.exists():
-                p.unlink()
-                print(f"[reset] removed {p.name}")
+    K_NORMAL = args.k
+    DROP_NORMAL = args.drop
+    PORTFOLIO_VALUE = float(args.capital)
+    STOP_LOSS_PCT = float(args.stop_loss)
+    VOL_TARGET_ANN = float(args.vol_target)
+    print(f"[cfg] capital={PORTFOLIO_VALUE:.0f} stop_loss={STOP_LOSS_PCT} "
+          f"vol_target={VOL_TARGET_ANN}")
 
     qlib.init(provider_uri=QLIB_DIR, region=REG_CN)
-    print(f"[1/3] qlib initialized — {QLIB_DIR}")
+    print(f"[init] qlib OK; config K={args.k} D={args.drop} tag={args.tag}")
+    if PRED_CACHE.exists():
+        sz = PRED_CACHE.stat().st_size / 1e6
+        print(f"[init] pred cache available: {PRED_CACHE.name} ({sz:.1f} MB)")
+    else:
+        print("[init] WARN: no pred cache, will train LGB per month (slow)")
 
     proxy = build_market_proxy()
 
-    first_test = datetime(2023, 1, 1)
-    last_test = datetime(2026, 4, 1)
+    first_test = datetime.strptime(args.first_test + "-01", "%Y-%m-%d")
+    last_test = datetime.strptime(args.last_test + "-01", "%Y-%m-%d")
     months = []
     cur = first_test
     while cur <= last_test:
@@ -459,54 +511,36 @@ def main():
         cur += relativedelta(months=1)
     if args.months and args.months < len(months):
         months = months[-args.months:]
-    print(f"[2/3] {len(months)} 月 walk-forward (baseline only, 无 regime)")
-    print("     注意: CSI300 用 2026 当前成分股 → 有 survivorship bias")
+    print(f"[run] {len(months)} 月 walk-forward (baseline only)")
 
     all_rows = []
     for i, m in enumerate(months, 1):
         try:
-            res = realistic_window(m, proxy, with_regime=False)
+            res = realistic_window(m, proxy, with_regime=args.regime)
             res["month"] = m.strftime("%Y-%m")
-            res["config"] = "baseline"
+            res["config"] = f"K={args.k} D={args.drop}"
             all_rows.append(res)
-            print(f"  {i:2d}/{len(months)} {res['month']}: abs_ret={res['abs_ret_%']:+6.2f}%  "
-                  f"picks={res['avg_picks']:.1f}", flush=True)
+            print(f"  {i:2d}/{len(months)} {res['month']}: "
+                  f"abs_ret={res['abs_ret_%']:+6.2f}%  picks={res['avg_picks']:.1f}",
+                  flush=True)
         except Exception as e:
             print(f"  {i:2d}/{len(months)} {m.strftime('%Y-%m')} FAIL: {str(e)[:80]}")
-            all_rows.append({"month": m.strftime("%Y-%m"), "config": "baseline",
+            all_rows.append({"month": m.strftime("%Y-%m"), "config": f"K={args.k} D={args.drop}",
                               "abs_ret_%": 0, "avg_picks": 0, "n_days": 0,
                               "regime_days": "", "n_skipped_limit": 0})
 
     df = pd.DataFrame(all_rows)
-    df.to_csv(OUT_DIR / "v17_csi300_2023_2026_stats.csv", index=False)
+    out_csv = OUT_DIR / f"v17_dens_a360_{args.tag}_stats.csv"
+    df.to_csv(out_csv, index=False)
 
-    print("\n[3/3] === 汇总 ===\n")
     mm = annualize_metrics(df["abs_ret_%"])
     mm["avg_picks"] = round(df["avg_picks"].mean(), 1)
+    mm["k"] = args.k
+    mm["drop"] = args.drop
+    mm["tag"] = args.tag
+    print(f"\n=== SUMMARY (DEnsemble + Alpha360) tag={args.tag} K={args.k} D={args.drop} ===")
     print(pd.Series(mm).to_string())
-
-    md = [
-        "# v17 = v13 CSI300 baseline (无 regime), 2023-01 → 2026-04",
-        "",
-        "**Universe**: CSI300 (300 只, **2026 当前成分股 — 有 survivorship bias**)",
-        f"**Period**: {months[0].strftime('%Y-%m')} → {months[-1].strftime('%Y-%m')} "
-        f"({len(months)} 月)",
-        f"**Capital**: {PORTFOLIO_VALUE:.0f} 元",
-        "",
-        "## 业绩汇总", "",
-        pd.Series(mm).to_markdown(),
-        "",
-        "## 跟其他时段对比",
-        "",
-        "| 项 | v13 CSI300 2017-2020 (qlib data) | v16 CSI300 2022-2023 baseline | v17 CSI300 2023-2026 baseline |",
-        "|----|---:|---:|---:|",
-        f"| 月数 | 44 | 24 | {len(months)} |",
-        f"| cum %  | +207 | +1.4 | {mm['cum_%']:+.1f} |",
-        f"| ann %  | +35.8 | +0.7 | {mm['ann_%']:+.1f} |",
-        f"| sharpe | 1.38 | 0.15 | {mm['sharpe']:.2f} |",
-    ]
-    (OUT_DIR / "v17_csi300_2023_2026_report.md").write_text("\n".join(md), encoding="utf-8")
-    print("\n输出: v17_csi300_2023_2026_{stats.csv, report.md}")
+    print(f"\n输出: v17_dens_{args.tag}_stats.csv")
 
 
 if __name__ == "__main__":

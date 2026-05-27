@@ -1,16 +1,13 @@
-"""v15 = v13 全A + regime gate (4 档: bear空仓/panic半仓/drawdown半仓/normal满仓).
+"""v17b = v17 CSI300 baseline 改 N_DROP=2 → 1 (持仓 4天 → 8天).
 
-跟 v13 全A 同, 但加入市场状态判断:
-  market proxy = 全A 每日中位数 close 等权 index (合成)
-  bear     : 价格 < MA200 × 0.95     -> K=0 空仓
-  panic    : 20日年化波动 > 35%      -> K=4 drop=1 半仓
-  drawdown : 60日回报 < -15%         -> K=4 drop=1 半仓
-  normal   : 其余                   -> K=8 drop=2 满仓
+动机: alphalens 显示 LGB score 在 10D IR=2.98 (peak), 21D 转负.
+      v17 N_DROP=2 平均持仓 4 天, 没吃完信号衰减曲线.
+      N_DROP=1 → 平均持仓 8 天, 贴近 10D peak.
 
-PoC 时段: 2022-01 → 2023-12 (24 月)
-对照 v13 全A (无 regime) 同时段 cumulative -56% (14 月 OOS).
+只改 DROP_NORMAL = 1, 其他全部跟 v17 一致.
+artifact 路径独立 (v17b_*), 不污染 v17 原始 artifact.
 
-Run:  python examples/strategy_v15_fullA_regime.py
+Run:  python examples/strategy_v17b_ndrop1.py --months 12 --reset-artifacts
 """
 from __future__ import annotations
 
@@ -37,15 +34,15 @@ PARQUET = ROOT / "data_cache" / "baidu_kline.parquet"
 INDEX_PARQUET = ROOT / "data_cache" / "index_kline.parquet"
 INDEX_CODE = "sh000300"
 OUT_DIR = Path(__file__).resolve().parent
-ARTIFACT_PRED = ROOT / "data_cache" / "v17_predictions.parquet"
-ARTIFACT_DAILY = ROOT / "data_cache" / "v17_daily_returns.csv"
+ARTIFACT_PRED = ROOT / "data_cache" / "v17b_predictions.parquet"
+ARTIFACT_DAILY = ROOT / "data_cache" / "v17b_daily_returns.csv"
 
 MARKET = "csi300"
 TRAIN_MONTHS = 12
 PORTFOLIO_VALUE = 5e4
 
 K_NORMAL = 8
-DROP_NORMAL = 2
+DROP_NORMAL = 1  # v17b: 2 → 1, 持仓 4天 → 8天
 K_HALF = 4
 DROP_HALF = 1
 BEAR_MA_RATIO = 0.95
@@ -478,7 +475,7 @@ def main():
                               "regime_days": "", "n_skipped_limit": 0})
 
     df = pd.DataFrame(all_rows)
-    df.to_csv(OUT_DIR / "v17_csi300_2023_2026_stats.csv", index=False)
+    df.to_csv(OUT_DIR / "v17b_csi300_2023_2026_stats.csv", index=False)
 
     print("\n[3/3] === 汇总 ===\n")
     mm = annualize_metrics(df["abs_ret_%"])
@@ -505,8 +502,8 @@ def main():
         f"| ann %  | +35.8 | +0.7 | {mm['ann_%']:+.1f} |",
         f"| sharpe | 1.38 | 0.15 | {mm['sharpe']:.2f} |",
     ]
-    (OUT_DIR / "v17_csi300_2023_2026_report.md").write_text("\n".join(md), encoding="utf-8")
-    print("\n输出: v17_csi300_2023_2026_{stats.csv, report.md}")
+    (OUT_DIR / "v17b_csi300_2023_2026_report.md").write_text("\n".join(md), encoding="utf-8")
+    print("\n输出: v17b_csi300_2023_2026_{stats.csv, report.md}")
 
 
 if __name__ == "__main__":

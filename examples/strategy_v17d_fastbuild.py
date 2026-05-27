@@ -1,16 +1,17 @@
-"""v15 = v13 全A + regime gate (4 档: bear空仓/panic半仓/drawdown半仓/normal满仓).
+"""v17d = v17 CSI300 保留月度清仓, 加速月内建仓 (避开 v17c 套牢陷阱).
 
-跟 v13 全A 同, 但加入市场状态判断:
-  market proxy = 全A 每日中位数 close 等权 index (合成)
-  bear     : 价格 < MA200 × 0.95     -> K=0 空仓
-  panic    : 20日年化波动 > 35%      -> K=4 drop=1 半仓
-  drawdown : 60日回报 < -15%         -> K=4 drop=1 半仓
-  normal   : 其余                   -> K=8 drop=2 满仓
+动机: v17c 跨月延续在 down-month 暴击 (MDD -40%). v17 月度清仓 = 隐式止损.
+      但 v17 渐进 N_DROP=2 导致月内只建到 2.8/K=8.
+      v17d 保留月度清仓 (止损不变), 月内前 3 天 effective_n_drop=K (全仓建),
+      之后回归 N_DROP=2 微调; cash_per_pick 改成循环内动态分配, 防止
+      "买便宜跳过贵" 的 cash 浪费.
 
-PoC 时段: 2022-01 → 2023-12 (24 月)
-对照 v13 全A (无 regime) 同时段 cumulative -56% (14 月 OOS).
+只改 2 处 (其他全部跟 v17 一致):
+  1. FAST_BUILD_DAYS=3, 月内前 3 天 effective_n_drop=K_NORMAL
+  2. cash_per_pick 在 buy loop 内按剩余 cash / 剩余 candidates 动态算
+artifact v17d_*, 不污染 v17/v17b/v17c.
 
-Run:  python examples/strategy_v15_fullA_regime.py
+Run:  python examples/strategy_v17d_fastbuild.py --months 12 --reset-artifacts
 """
 from __future__ import annotations
 
@@ -37,8 +38,8 @@ PARQUET = ROOT / "data_cache" / "baidu_kline.parquet"
 INDEX_PARQUET = ROOT / "data_cache" / "index_kline.parquet"
 INDEX_CODE = "sh000300"
 OUT_DIR = Path(__file__).resolve().parent
-ARTIFACT_PRED = ROOT / "data_cache" / "v17_predictions.parquet"
-ARTIFACT_DAILY = ROOT / "data_cache" / "v17_daily_returns.csv"
+ARTIFACT_PRED = ROOT / "data_cache" / "v17d_predictions.parquet"
+ARTIFACT_DAILY = ROOT / "data_cache" / "v17d_daily_returns.csv"
 
 MARKET = "csi300"
 TRAIN_MONTHS = 12
@@ -46,6 +47,7 @@ PORTFOLIO_VALUE = 5e4
 
 K_NORMAL = 8
 DROP_NORMAL = 2
+FAST_BUILD_DAYS = 3  # v17d: 月内前 N 天 effective_n_drop=K (快速建仓)
 K_HALF = 4
 DROP_HALF = 1
 BEAR_MA_RATIO = 0.95
@@ -325,7 +327,9 @@ def realistic_window(test_month_start, proxy, with_regime: bool = True):
         if excess > 0:
             extra_drop = [c for c in current_holdings if c not in to_drop and c not in target_topk]
             to_drop.extend(extra_drop[:excess])
-        buy_candidates = [c for c in target_topk if c not in current_holdings][:n_drop]
+        # v17d: 月内前 FAST_BUILD_DAYS 天放开 n_drop 限制, 让组合快速建满 K
+        effective_n_drop = topk if di < FAST_BUILD_DAYS else n_drop
+        buy_candidates = [c for c in target_topk if c not in current_holdings][:effective_n_drop]
 
         for c in to_drop:
             shares = current_holdings[c]
@@ -346,8 +350,12 @@ def realistic_window(test_month_start, proxy, with_regime: bool = True):
             cash += shares * exec_p * (1 - impact - 0.0005)
             del current_holdings[c]
 
-        cash_per_pick = cash / max(len(buy_candidates), 1)
+        # v17d: cash 动态分配 — 每个 candidate 处理时按剩余 cash / 剩余 candidates 计算预算
+        # 防止"买便宜跳过贵"导致大额 cash 闲置
+        remaining_buys = len(buy_candidates)
         for c in buy_candidates:
+            cash_per_pick = cash / max(remaining_buys, 1)
+            remaining_buys -= 1
             if c not in open_pv.columns or next_td not in open_pv.index:
                 continue
             prev_close = close_pv.loc[td, c] if td in close_pv.index else None
@@ -478,7 +486,7 @@ def main():
                               "regime_days": "", "n_skipped_limit": 0})
 
     df = pd.DataFrame(all_rows)
-    df.to_csv(OUT_DIR / "v17_csi300_2023_2026_stats.csv", index=False)
+    df.to_csv(OUT_DIR / "v17d_csi300_2023_2026_stats.csv", index=False)
 
     print("\n[3/3] === 汇总 ===\n")
     mm = annualize_metrics(df["abs_ret_%"])
@@ -505,8 +513,8 @@ def main():
         f"| ann %  | +35.8 | +0.7 | {mm['ann_%']:+.1f} |",
         f"| sharpe | 1.38 | 0.15 | {mm['sharpe']:.2f} |",
     ]
-    (OUT_DIR / "v17_csi300_2023_2026_report.md").write_text("\n".join(md), encoding="utf-8")
-    print("\n输出: v17_csi300_2023_2026_{stats.csv, report.md}")
+    (OUT_DIR / "v17d_csi300_2023_2026_report.md").write_text("\n".join(md), encoding="utf-8")
+    print("\n输出: v17d_csi300_2023_2026_{stats.csv, report.md}")
 
 
 if __name__ == "__main__":

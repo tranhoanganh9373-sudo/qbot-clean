@@ -17,6 +17,7 @@ from pathlib import Path
 import pandas as pd
 
 from claude_finance.decision import render_scan_report
+from claude_finance.scan_cache import cache_or_fetch
 
 OUT_DIR = Path(__file__).resolve().parent
 SCAN_RESULTS = OUT_DIR / "deepseek_scan_results.json"
@@ -47,13 +48,25 @@ def _add_prefix(bare_code: str) -> str:
 
 
 def fetch_sector(name: str) -> dict[str, str] | None:
-    """Return {csv_code: stock_name} or None after retries fail."""
+    """Return {csv_code: stock_name} or None after retries fail.
+
+    Cache: ``data_cache/scan_cache/ak_stock_board_industry_cons_em_{name}.parquet``,
+    TTL 24h (sector 成分变动 ≈ 季度级, 1 天足够).  fetcher 抛异常时 scan_cache 会
+    自动回落 stale; 这里保留外层 retry 给真没 cache 的 cold start.
+    """
     import akshare as ak
+
+    def _fetch() -> pd.DataFrame:
+        return ak.stock_board_industry_cons_em(symbol=name)
 
     last_err = ""
     for attempt in range(MAX_RETRIES):
         try:
-            raw = ak.stock_board_industry_cons_em(symbol=name)
+            raw = cache_or_fetch(
+                key=f"ak_stock_board_industry_cons_em_{name}",
+                fetcher=_fetch,
+                ttl_hours=24.0,
+            )
             out = {}
             for _, row in raw.iterrows():
                 csv_code = _add_prefix(str(row["代码"]))

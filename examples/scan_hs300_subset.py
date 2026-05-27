@@ -16,6 +16,7 @@ from pathlib import Path
 import pandas as pd
 
 from claude_finance.decision import render_scan_report
+from claude_finance.scan_cache import cache_or_fetch
 
 SCAN_RESULTS = Path(__file__).resolve().parent / "deepseek_scan_results.json"
 REPORT_MD = Path(__file__).resolve().parent / "hs300_report.md"
@@ -33,10 +34,18 @@ def _exchange_prefix(exchange: str) -> str:
 
 
 def fetch_hs300_components() -> pd.DataFrame:
-    """Return DataFrame with columns: csv_code, name, weight."""
+    """Return DataFrame with columns: csv_code, name, weight.
+
+    Cache: ``data_cache/scan_cache/ak_index_stock_cons_weight_csindex_000300.parquet``,
+    TTL 24h (HS300 季度调样, 1 天足够).
+    """
     import akshare as ak
 
-    raw = ak.index_stock_cons_weight_csindex(symbol="000300")
+    raw = cache_or_fetch(
+        key="ak_index_stock_cons_weight_csindex_000300",
+        fetcher=lambda: ak.index_stock_cons_weight_csindex(symbol="000300"),
+        ttl_hours=24.0,
+    )
     raw["csv_code"] = raw.apply(
         lambda r: _exchange_prefix(r["交易所"]) + str(r["成分券代码"]), axis=1
     )

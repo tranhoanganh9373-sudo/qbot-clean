@@ -14,6 +14,7 @@ from pathlib import Path
 import pandas as pd
 
 from claude_finance.decision import render_scan_report
+from claude_finance.scan_cache import cache_or_fetch
 
 OUT_DIR = Path(__file__).resolve().parent
 SCAN_RESULTS = OUT_DIR / "deepseek_scan_results.json"
@@ -36,10 +37,19 @@ def _exchange_prefix(exchange: str) -> str:
 
 
 def fetch_index_components(index_code: str) -> dict[str, dict]:
-    """Return {csv_code: {'name': str, 'weight': float}}."""
+    """Return {csv_code: {'name': str, 'weight': float}}.
+
+    Cache: ``data_cache/scan_cache/ak_index_stock_cons_weight_csindex_{code}.parquet``,
+    TTL 24h (CSI 指数季度调样, 1 天足够).  Key 与 scan_hs300_subset 一致, 二者共享
+    "000300" 的 cache 命中.
+    """
     import akshare as ak
 
-    raw = ak.index_stock_cons_weight_csindex(symbol=index_code)
+    raw = cache_or_fetch(
+        key=f"ak_index_stock_cons_weight_csindex_{index_code}",
+        fetcher=lambda: ak.index_stock_cons_weight_csindex(symbol=index_code),
+        ttl_hours=24.0,
+    )
     out = {}
     for _, row in raw.iterrows():
         csv_code = _exchange_prefix(row["交易所"]) + str(row["成分券代码"])

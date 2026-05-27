@@ -1,16 +1,17 @@
-"""v15 = v13 全A + regime gate (4 档: bear空仓/panic半仓/drawdown半仓/normal满仓).
+"""v17c = v17 CSI300 baseline 改跨月持仓延续 (root-cause fix).
 
-跟 v13 全A 同, 但加入市场状态判断:
-  market proxy = 全A 每日中位数 close 等权 index (合成)
-  bear     : 价格 < MA200 × 0.95     -> K=0 空仓
-  panic    : 20日年化波动 > 35%      -> K=4 drop=1 半仓
-  drawdown : 60日回报 < -15%         -> K=4 drop=1 半仓
-  normal   : 其余                   -> K=8 drop=2 满仓
+动机: v17b 验证发现 v17 实际持仓只有 2.8 / K=8, 从未满仓.
+      根因是 realistic_window 每月开头 current_holdings={}, cash=50k,
+      渐进建仓只能买 N_DROP=2 只/天, 20 天月窗里实际只能爬到 ~3 只.
 
-PoC 时段: 2022-01 → 2023-12 (24 月)
-对照 v13 全A (无 regime) 同时段 cumulative -56% (14 月 OOS).
+v17c 改动: realistic_window 接受 init_{holdings,cash,last_price},
+          月底返回 final_{holdings,cash,last_price}; main 跨月串联,
+          月初持仓 = 上月底持仓; PORTFOLIO_VALUE 只在 main 起始用一次.
 
-Run:  python examples/strategy_v15_fullA_regime.py
+其他参数全部跟 v17 一致 (K=8, N_DROP=2, 同 LGB params, 同 universe).
+artifact 路径独立 (v17c_*), 不污染 v17/v17b artifact.
+
+Run:  python examples/strategy_v17c_xmonth.py --months 12 --reset-artifacts
 """
 from __future__ import annotations
 
@@ -37,8 +38,8 @@ PARQUET = ROOT / "data_cache" / "baidu_kline.parquet"
 INDEX_PARQUET = ROOT / "data_cache" / "index_kline.parquet"
 INDEX_CODE = "sh000300"
 OUT_DIR = Path(__file__).resolve().parent
-ARTIFACT_PRED = ROOT / "data_cache" / "v17_predictions.parquet"
-ARTIFACT_DAILY = ROOT / "data_cache" / "v17_daily_returns.csv"
+ARTIFACT_PRED = ROOT / "data_cache" / "v17c_predictions.parquet"
+ARTIFACT_DAILY = ROOT / "data_cache" / "v17c_daily_returns.csv"
 
 MARKET = "csi300"
 TRAIN_MONTHS = 12
@@ -198,7 +199,10 @@ def _persist_daily_returns(month_key: str, dates: list, rets: list, holdings: li
     out.to_csv(ARTIFACT_DAILY, index=False)
 
 
-def realistic_window(test_month_start, proxy, with_regime: bool = True):
+def realistic_window(test_month_start, proxy, with_regime: bool = True,
+                     init_holdings: dict | None = None,
+                     init_cash: float | None = None,
+                     init_last_price: dict | None = None):
     test_start = month_start(test_month_start)
     test_end = month_end(test_month_start)
 
@@ -214,14 +218,18 @@ def realistic_window(test_month_start, proxy, with_regime: bool = True):
     test_dates = sorted(pred_unstacked.index)
     if len(test_dates) < 2:
         return {"abs_ret_%": 0, "avg_picks": 0, "n_days": 0,
-                "regime_days": "", "n_skipped_limit": 0}
+                "regime_days": "", "n_skipped_limit": 0,
+                "final_holdings": dict(init_holdings or {}),
+                "final_cash": (init_cash if init_cash is not None
+                                else PORTFOLIO_VALUE),
+                "final_last_price": dict(init_last_price or {})}
 
-    current_holdings = {}
-    cash = PORTFOLIO_VALUE
+    current_holdings = dict(init_holdings or {})
+    cash = init_cash if init_cash is not None else PORTFOLIO_VALUE
     daily_ret = []
     daily_dates: list[pd.Timestamp] = []
     n_picks_realized = []
-    last_known_price = {}
+    last_known_price = dict(init_last_price or {})
     n_skipped_limit = 0
     regime_counts = {"normal": 0, "bear": 0, "panic": 0, "drawdown": 0}
 
@@ -403,6 +411,9 @@ def realistic_window(test_month_start, proxy, with_regime: bool = True):
         "n_days": len(daily_ret),
         "regime_days": rg,
         "n_skipped_limit": n_skipped_limit,
+        "final_holdings": current_holdings,
+        "final_cash": cash,
+        "final_last_price": last_known_price,
     }
 
 
@@ -463,14 +474,30 @@ def main():
     print("     注意: CSI300 用 2026 当前成分股 → 有 survivorship bias")
 
     all_rows = []
+    state_holdings: dict = {}
+    state_cash: float = PORTFOLIO_VALUE
+    state_last_price: dict = {}
     for i, m in enumerate(months, 1):
         try:
-            res = realistic_window(m, proxy, with_regime=False)
+            res = realistic_window(
+                m, proxy, with_regime=False,
+                init_holdings=state_holdings,
+                init_cash=state_cash,
+                init_last_price=state_last_price,
+            )
+            state_holdings = res.pop("final_holdings", {})
+            state_cash = res.pop("final_cash", PORTFOLIO_VALUE)
+            state_last_price = res.pop("final_last_price", {})
             res["month"] = m.strftime("%Y-%m")
             res["config"] = "baseline"
+            res["end_cash"] = round(state_cash, 1)
+            res["end_n_holdings"] = len(state_holdings)
             all_rows.append(res)
-            print(f"  {i:2d}/{len(months)} {res['month']}: abs_ret={res['abs_ret_%']:+6.2f}%  "
-                  f"picks={res['avg_picks']:.1f}", flush=True)
+            print(f"  {i:2d}/{len(months)} {res['month']}: "
+                  f"abs_ret={res['abs_ret_%']:+6.2f}%  "
+                  f"picks={res['avg_picks']:.1f}  "
+                  f"end_hold={len(state_holdings)}  "
+                  f"end_cash={state_cash:.0f}", flush=True)
         except Exception as e:
             print(f"  {i:2d}/{len(months)} {m.strftime('%Y-%m')} FAIL: {str(e)[:80]}")
             all_rows.append({"month": m.strftime("%Y-%m"), "config": "baseline",
@@ -478,7 +505,7 @@ def main():
                               "regime_days": "", "n_skipped_limit": 0})
 
     df = pd.DataFrame(all_rows)
-    df.to_csv(OUT_DIR / "v17_csi300_2023_2026_stats.csv", index=False)
+    df.to_csv(OUT_DIR / "v17c_csi300_2023_2026_stats.csv", index=False)
 
     print("\n[3/3] === 汇总 ===\n")
     mm = annualize_metrics(df["abs_ret_%"])
@@ -505,8 +532,8 @@ def main():
         f"| ann %  | +35.8 | +0.7 | {mm['ann_%']:+.1f} |",
         f"| sharpe | 1.38 | 0.15 | {mm['sharpe']:.2f} |",
     ]
-    (OUT_DIR / "v17_csi300_2023_2026_report.md").write_text("\n".join(md), encoding="utf-8")
-    print("\n输出: v17_csi300_2023_2026_{stats.csv, report.md}")
+    (OUT_DIR / "v17c_csi300_2023_2026_report.md").write_text("\n".join(md), encoding="utf-8")
+    print("\n输出: v17c_csi300_2023_2026_{stats.csv, report.md}")
 
 
 if __name__ == "__main__":

@@ -1,16 +1,19 @@
-"""v15 = v13 全A + regime gate (4 档: bear空仓/panic半仓/drawdown半仓/normal满仓).
+"""Hybrid LGB + DoubleEnsemble grid — daily score 等权平均后跑 trading sim.
 
-跟 v13 全A 同, 但加入市场状态判断:
-  market proxy = 全A 每日中位数 close 等权 index (合成)
-  bear     : 价格 < MA200 × 0.95     -> K=0 空仓
-  panic    : 20日年化波动 > 35%      -> K=4 drop=1 半仓
-  drawdown : 60日回报 < -15%         -> K=4 drop=1 半仓
-  normal   : 其余                   -> K=8 drop=2 满仓
+动机: DEns 60月 Sharpe 1.14 / cum 957% / MDD -50%; LGB 60月 Sharpe 0.94 / cum 244% / MDD -27%.
+      混合两者预测期望平滑 DEns 的极端波动, 同时保留 alpha.
+      score = 0.5 * lgb_score + 0.5 * dens_score (模型层 ensemble, 非 portfolio 层).
 
-PoC 时段: 2022-01 → 2023-12 (24 月)
-对照 v13 全A (无 regime) 同时段 cumulative -56% (14 月 OOS).
+数据:
+  读 data_cache/v17_predictions.parquet (LGB) + data_cache/v17_dens_predictions.parquet (DEns),
+  按 (datetime, instrument) join, score = mean(lgb, dens). 两 cache 都已 60 月.
 
-Run:  python examples/strategy_v15_fullA_regime.py
+输出:
+  examples/v17_hybrid_<tag>_stats.csv
+
+Run:
+  python examples/strategy_v17_hybrid_grid.py --k 8 --drop 2 --tag hybrid_k8d2_60m \\
+      --first-test 2021-05 --last-test 2026-04 --months 60
 """
 from __future__ import annotations
 
@@ -33,17 +36,17 @@ warnings.filterwarnings("ignore")
 
 ROOT = Path(__file__).resolve().parent.parent
 QLIB_DIR = str(ROOT / "data_cache" / "qlib_baidu")
-PARQUET = ROOT / "data_cache" / "baidu_kline.parquet"
 INDEX_PARQUET = ROOT / "data_cache" / "index_kline.parquet"
 INDEX_CODE = "sh000300"
 OUT_DIR = Path(__file__).resolve().parent
-ARTIFACT_PRED = ROOT / "data_cache" / "v17_predictions.parquet"
-ARTIFACT_DAILY = ROOT / "data_cache" / "v17_daily_returns.csv"
+PRED_CACHE_LGB = ROOT / "data_cache" / "v17_predictions.parquet"
+PRED_CACHE_DENS = ROOT / "data_cache" / "v17_dens_predictions.parquet"
 
 MARKET = "csi300"
 TRAIN_MONTHS = 12
 PORTFOLIO_VALUE = 5e4
 
+# CLI 覆盖这两个 (默认 v17 值)
 K_NORMAL = 8
 DROP_NORMAL = 2
 K_HALF = 4
@@ -92,16 +95,10 @@ def month_end(d):
 
 
 def build_market_proxy() -> pd.Series:
-    """读 index_kline.parquet 取 SH000300 close 作 regime detector."""
-    print(f"[regime] 加载 {INDEX_PARQUET.name} 取 {INDEX_CODE} 作市场指标 ...")
     df = pd.read_parquet(INDEX_PARQUET)
     df = df[df["code"] == INDEX_CODE].copy()
     df["date"] = pd.to_datetime(df["date"])
-    proxy = df.set_index("date")["close"].sort_index()
-    print(f"  {INDEX_CODE} 真实指数: {len(proxy)} 天, "
-          f"{proxy.index[0].date()} → {proxy.index[-1].date()}")
-    print(f"  start={proxy.iloc[0]:.1f}  end={proxy.iloc[-1]:.1f}")
-    return proxy
+    return df.set_index("date")["close"].sort_index()
 
 
 def regime_for_day(td, proxy):
@@ -114,17 +111,14 @@ def regime_for_day(td, proxy):
     px = proxy.iloc[pos]
     if px < ma200 * BEAR_MA_RATIO:
         return 0, 0, "bear"
-
     rets20 = proxy.iloc[pos - 19: pos + 1].pct_change().dropna()
     vol_ann = rets20.std() * np.sqrt(252) if len(rets20) > 0 else 0
     if vol_ann > PANIC_VOL_ANN:
         return K_HALF, DROP_HALF, "panic"
-
     if pos >= 60:
         ret_60d = proxy.iloc[pos] / proxy.iloc[pos - 60] - 1
         if ret_60d < DRAWDOWN_60D:
             return K_HALF, DROP_HALF, "drawdown"
-
     return K_NORMAL, DROP_NORMAL, "normal"
 
 
@@ -139,63 +133,42 @@ def get_price_data(start, end):
 
 
 _pred_cache: dict[str, pd.Series] = {}
+_pred_lgb_df: pd.DataFrame | None = None
+_pred_dens_df: pd.DataFrame | None = None
+
+
+def _load_hybrid_pred(month_key: str) -> pd.Series | None:
+    """读两个 cache, score = 0.5*lgb + 0.5*dens (按 datetime,instrument inner-join)."""
+    global _pred_lgb_df, _pred_dens_df
+    if not PRED_CACHE_LGB.exists() or not PRED_CACHE_DENS.exists():
+        raise RuntimeError(
+            f"Hybrid needs both caches; missing {PRED_CACHE_LGB.name} "
+            f"or {PRED_CACHE_DENS.name}"
+        )
+    if _pred_lgb_df is None:
+        _pred_lgb_df = pd.read_parquet(PRED_CACHE_LGB)
+    if _pred_dens_df is None:
+        _pred_dens_df = pd.read_parquet(PRED_CACHE_DENS)
+    lgb_m = _pred_lgb_df[_pred_lgb_df["month"] == month_key]
+    dens_m = _pred_dens_df[_pred_dens_df["month"] == month_key]
+    if len(lgb_m) == 0 or len(dens_m) == 0:
+        return None
+    lgb_m = lgb_m[["datetime", "instrument", "score"]].rename(columns={"score": "s_lgb"})
+    dens_m = dens_m[["datetime", "instrument", "score"]].rename(columns={"score": "s_dens"})
+    merged = lgb_m.merge(dens_m, on=["datetime", "instrument"], how="inner")
+    merged["score"] = 0.5 * merged["s_lgb"] + 0.5 * merged["s_dens"]
+    return merged.set_index(["datetime", "instrument"])["score"]
 
 
 def get_pred_for_month(test_month_start):
     key = test_month_start.strftime("%Y-%m")
     if key in _pred_cache:
         return _pred_cache[key]
-    test_start = month_start(test_month_start)
-    test_end = month_end(test_month_start)
-    train_start = month_start(test_month_start - relativedelta(months=TRAIN_MONTHS))
-    valid_start = month_start(test_month_start - relativedelta(months=1))
-    train_end = month_end(test_month_start - relativedelta(months=2))
-    valid_end = month_end(test_month_start - relativedelta(months=1))
-
-    handler = Alpha158(
-        start_time=train_start, end_time=test_end,
-        fit_start_time=train_start, fit_end_time=train_end,
-        instruments=MARKET,
-    )
-    dataset = DatasetH(handler=handler, segments={
-        "train": (train_start, train_end),
-        "valid": (valid_start, valid_end),
-        "test": (test_start, test_end),
-    })
-    model = LGBModel(**LGB_PARAMS)
-    model.fit(dataset)
-    pred = model.predict(dataset, segment="test")
-    _pred_cache[key] = pred
-    _persist_predictions(key, pred)
-    return pred
-
-
-def _persist_predictions(month_key: str, pred: pd.Series) -> None:
-    """Append predictions to parquet (idempotent by month_key)."""
-    new_df = pred.to_frame("score").reset_index()
-    new_df["month"] = month_key
-    if ARTIFACT_PRED.exists():
-        old = pd.read_parquet(ARTIFACT_PRED)
-        old = old[old["month"] != month_key]
-        out = pd.concat([old, new_df], ignore_index=True)
-    else:
-        out = new_df
-    ARTIFACT_PRED.parent.mkdir(parents=True, exist_ok=True)
-    out.to_parquet(ARTIFACT_PRED, index=False)
-
-
-def _persist_daily_returns(month_key: str, dates: list, rets: list, holdings: list) -> None:
-    """Append daily returns to CSV (idempotent by month_key)."""
-    new_df = pd.DataFrame({"date": dates, "daily_ret": rets, "n_holdings": holdings})
-    new_df["month"] = month_key
-    if ARTIFACT_DAILY.exists():
-        old = pd.read_csv(ARTIFACT_DAILY)
-        old = old[old["month"] != month_key]
-        out = pd.concat([old, new_df], ignore_index=True)
-    else:
-        out = new_df
-    ARTIFACT_DAILY.parent.mkdir(parents=True, exist_ok=True)
-    out.to_csv(ARTIFACT_DAILY, index=False)
+    cached = _load_hybrid_pred(key)
+    if cached is None:
+        raise RuntimeError(f"No hybrid pred for {key} — both caches must cover this month")
+    _pred_cache[key] = cached
+    return cached
 
 
 def realistic_window(test_month_start, proxy, with_regime: bool = True):
@@ -216,12 +189,11 @@ def realistic_window(test_month_start, proxy, with_regime: bool = True):
         return {"abs_ret_%": 0, "avg_picks": 0, "n_days": 0,
                 "regime_days": "", "n_skipped_limit": 0}
 
-    current_holdings = {}
+    current_holdings: dict = {}
     cash = PORTFOLIO_VALUE
     daily_ret = []
-    daily_dates: list[pd.Timestamp] = []
     n_picks_realized = []
-    last_known_price = {}
+    last_known_price: dict = {}
     n_skipped_limit = 0
     regime_counts = {"normal": 0, "bear": 0, "panic": 0, "drawdown": 0}
 
@@ -289,7 +261,6 @@ def realistic_window(test_month_start, proxy, with_regime: bool = True):
             new_port_val = mark_to_market(next_td)
             if port_val > 0:
                 daily_ret.append(new_port_val / port_val - 1)
-                daily_dates.append(next_td)
             continue
 
         scores_all = pred_unstacked.loc[td].dropna().sort_values(ascending=False)
@@ -379,24 +350,12 @@ def realistic_window(test_month_start, proxy, with_regime: bool = True):
         new_port_val = mark_to_market(next_td)
         if port_val > 0:
             daily_ret.append(new_port_val / port_val - 1)
-            daily_dates.append(next_td)
 
     if not daily_ret:
         return {"abs_ret_%": 0, "avg_picks": 0, "n_days": 0,
                 "regime_days": "", "n_skipped_limit": n_skipped_limit}
     abs_ret = (1 + pd.Series(daily_ret)).prod() - 1
     rg = "/".join(f"{k}={v}" for k, v in regime_counts.items() if v > 0)
-    holdings_per_day = n_picks_realized[: len(daily_ret)]
-    if len(holdings_per_day) < len(daily_ret):
-        holdings_per_day += [holdings_per_day[-1] if holdings_per_day else 0] * (
-            len(daily_ret) - len(holdings_per_day)
-        )
-    _persist_daily_returns(
-        test_month_start.strftime("%Y-%m"),
-        [d.strftime("%Y-%m-%d") for d in daily_dates],
-        daily_ret,
-        holdings_per_day,
-    )
     return {
         "abs_ret_%": round(abs_ret * 100, 2),
         "avg_picks": round(np.mean(n_picks_realized), 1) if n_picks_realized else 0,
@@ -428,30 +387,34 @@ def annualize_metrics(returns, n_periods_per_year=12):
 
 
 def main():
+    global K_NORMAL, DROP_NORMAL
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--months", type=int, default=0,
-        help="0=full 40 months (2023-01→2026-04); >0=last N months only (PoC)",
-    )
-    parser.add_argument(
-        "--reset-artifacts", action="store_true",
-        help="Delete v17_predictions.parquet + v17_daily_returns.csv before run",
-    )
+    parser.add_argument("--k", type=int, required=True)
+    parser.add_argument("--drop", type=int, required=True)
+    parser.add_argument("--tag", type=str, required=True,
+                         help="artifact 文件名后缀, e.g. k3d2")
+    parser.add_argument("--months", type=int, default=0,
+                         help="0=use full [first-test, last-test] range; >0=truncate to last N")
+    parser.add_argument("--first-test", type=str, default="2023-01",
+                         help="first test month YYYY-MM (default 2023-01)")
+    parser.add_argument("--last-test", type=str, default="2026-04",
+                         help="last test month YYYY-MM (default 2026-04)")
     args = parser.parse_args()
 
-    if args.reset_artifacts:
-        for p in (ARTIFACT_PRED, ARTIFACT_DAILY):
-            if p.exists():
-                p.unlink()
-                print(f"[reset] removed {p.name}")
+    K_NORMAL = args.k
+    DROP_NORMAL = args.drop
 
     qlib.init(provider_uri=QLIB_DIR, region=REG_CN)
-    print(f"[1/3] qlib initialized — {QLIB_DIR}")
+    print(f"[init] qlib OK; HYBRID K={args.k} D={args.drop} tag={args.tag}")
+    for p in (PRED_CACHE_LGB, PRED_CACHE_DENS):
+        if not p.exists():
+            raise SystemExit(f"missing required cache: {p}")
+        print(f"[init] {p.name} ({p.stat().st_size / 1e6:.1f} MB)")
 
     proxy = build_market_proxy()
 
-    first_test = datetime(2023, 1, 1)
-    last_test = datetime(2026, 4, 1)
+    first_test = datetime.strptime(args.first_test + "-01", "%Y-%m-%d")
+    last_test = datetime.strptime(args.last_test + "-01", "%Y-%m-%d")
     months = []
     cur = first_test
     while cur <= last_test:
@@ -459,54 +422,36 @@ def main():
         cur += relativedelta(months=1)
     if args.months and args.months < len(months):
         months = months[-args.months:]
-    print(f"[2/3] {len(months)} 月 walk-forward (baseline only, 无 regime)")
-    print("     注意: CSI300 用 2026 当前成分股 → 有 survivorship bias")
+    print(f"[run] {len(months)} 月 walk-forward (baseline only)")
 
     all_rows = []
     for i, m in enumerate(months, 1):
         try:
             res = realistic_window(m, proxy, with_regime=False)
             res["month"] = m.strftime("%Y-%m")
-            res["config"] = "baseline"
+            res["config"] = f"K={args.k} D={args.drop}"
             all_rows.append(res)
-            print(f"  {i:2d}/{len(months)} {res['month']}: abs_ret={res['abs_ret_%']:+6.2f}%  "
-                  f"picks={res['avg_picks']:.1f}", flush=True)
+            print(f"  {i:2d}/{len(months)} {res['month']}: "
+                  f"abs_ret={res['abs_ret_%']:+6.2f}%  picks={res['avg_picks']:.1f}",
+                  flush=True)
         except Exception as e:
             print(f"  {i:2d}/{len(months)} {m.strftime('%Y-%m')} FAIL: {str(e)[:80]}")
-            all_rows.append({"month": m.strftime("%Y-%m"), "config": "baseline",
+            all_rows.append({"month": m.strftime("%Y-%m"), "config": f"K={args.k} D={args.drop}",
                               "abs_ret_%": 0, "avg_picks": 0, "n_days": 0,
                               "regime_days": "", "n_skipped_limit": 0})
 
     df = pd.DataFrame(all_rows)
-    df.to_csv(OUT_DIR / "v17_csi300_2023_2026_stats.csv", index=False)
+    out_csv = OUT_DIR / f"v17_hybrid_{args.tag}_stats.csv"
+    df.to_csv(out_csv, index=False)
 
-    print("\n[3/3] === 汇总 ===\n")
     mm = annualize_metrics(df["abs_ret_%"])
     mm["avg_picks"] = round(df["avg_picks"].mean(), 1)
+    mm["k"] = args.k
+    mm["drop"] = args.drop
+    mm["tag"] = args.tag
+    print(f"\n=== SUMMARY (HYBRID) tag={args.tag} K={args.k} D={args.drop} ===")
     print(pd.Series(mm).to_string())
-
-    md = [
-        "# v17 = v13 CSI300 baseline (无 regime), 2023-01 → 2026-04",
-        "",
-        "**Universe**: CSI300 (300 只, **2026 当前成分股 — 有 survivorship bias**)",
-        f"**Period**: {months[0].strftime('%Y-%m')} → {months[-1].strftime('%Y-%m')} "
-        f"({len(months)} 月)",
-        f"**Capital**: {PORTFOLIO_VALUE:.0f} 元",
-        "",
-        "## 业绩汇总", "",
-        pd.Series(mm).to_markdown(),
-        "",
-        "## 跟其他时段对比",
-        "",
-        "| 项 | v13 CSI300 2017-2020 (qlib data) | v16 CSI300 2022-2023 baseline | v17 CSI300 2023-2026 baseline |",
-        "|----|---:|---:|---:|",
-        f"| 月数 | 44 | 24 | {len(months)} |",
-        f"| cum %  | +207 | +1.4 | {mm['cum_%']:+.1f} |",
-        f"| ann %  | +35.8 | +0.7 | {mm['ann_%']:+.1f} |",
-        f"| sharpe | 1.38 | 0.15 | {mm['sharpe']:.2f} |",
-    ]
-    (OUT_DIR / "v17_csi300_2023_2026_report.md").write_text("\n".join(md), encoding="utf-8")
-    print("\n输出: v17_csi300_2023_2026_{stats.csv, report.md}")
+    print(f"\n输出: v17_hybrid_{args.tag}_stats.csv")
 
 
 if __name__ == "__main__":

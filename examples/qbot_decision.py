@@ -19,26 +19,48 @@ from claude_finance.decision import (
     analyze_one,
     render_decision_report,
 )
+from claude_finance.scan_cache import cache_or_fetch
+
+QBOT_TTL_HOURS = 6.0  # interactive CLI: 半天内重复跑命中 cache
 
 
 def _fetch_index(ak_symbol: str) -> pd.DataFrame:
+    """Cache: ``ak_stock_zh_index_daily_{ak_symbol}.parquet``, TTL 6h."""
     import akshare as ak
 
-    df = ak.stock_zh_index_daily(symbol=ak_symbol)
+    df = cache_or_fetch(
+        key=f"ak_stock_zh_index_daily_{ak_symbol}",
+        fetcher=lambda: ak.stock_zh_index_daily(symbol=ak_symbol),
+        ttl_hours=QBOT_TTL_HOURS,
+    )
+    df = df.copy()
     df["date"] = pd.to_datetime(df["date"])
     return df.set_index("date").tail(180)
 
 
 def _fetch_stock(code: str, retries: int = 3) -> pd.DataFrame:
+    """Cache: ``ak_stock_zh_a_hist_{code}_qfq.parquet``, TTL 6h.
+
+    日期窗口故意不进 cache key — cache hit 时返回最近一次抓的 300d 窗口数据,
+    取 tail(180) 仍然能覆盖中线决策需求.  TTL 6h 内不会跨日, 窗口偏移可忽略.
+    """
     import akshare as ak
 
     end = pd.Timestamp.today().strftime("%Y%m%d")
     start = (pd.Timestamp.today() - pd.Timedelta(days=300)).strftime("%Y%m%d")
+
+    def _fetch() -> pd.DataFrame:
+        return ak.stock_zh_a_hist(
+            symbol=code, period="daily", start_date=start, end_date=end, adjust="qfq",
+        )
+
     last_err: Exception | None = None
     for attempt in range(retries):
         try:
-            df = ak.stock_zh_a_hist(
-                symbol=code, period="daily", start_date=start, end_date=end, adjust="qfq"
+            df = cache_or_fetch(
+                key=f"ak_stock_zh_a_hist_{code}_qfq",
+                fetcher=_fetch,
+                ttl_hours=QBOT_TTL_HOURS,
             )
             df = df.rename(columns={
                 "日期": "date", "开盘": "open", "收盘": "close",
